@@ -1,0 +1,97 @@
+[package]
+name = "proteus"
+version = "0.1.0"
+edition = "2021"
+authors = ["Proteus Contributors"]
+description = "A Semantic Folding engine implementing Sparse Distributed Representations for natural language processing"
+license = "MIT"
+repository = "https://github.com/proteus/proteus"
+keywords = ["nlp", "semantic", "sdr", "som", "machine-learning"]
+categories = ["science", "text-processing"]
+
+[lib]
+name = "proteus"
+path = "src/lib.rs"
+
+[[bin]]
+name = "proteus"
+path = "src/main.rs"
+
+[dependencies]
+# Compressed bitmap for SDR storage
+roaring = { version = "0.10", features = ["serde"] }
+
+# Unicode-aware text processing
+unicode-segmentation = "1.10"
+unicode-normalization = "0.1"
+
+# Random number generation for SOM
+rand = "0.8"
+rand_distr = "0.4"
+rand_chacha = "0.3"
+
+# Parallel processing
+rayon = "1.8"
+
+# Error handling
+thiserror = "2.0"
+
+# Binary serialization
+bincode = "1.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Memory-mapped files
+memmap2 = "0.9"
+
+# Command-line interface
+clap = { version = "4.4", features = ["derive"] }
+
+# Logging
+log = "0.4"
+env_logger = "0.10"
+
+# Small vector optimization
+smallvec = "1.11"
+
+# Better synchronization primitives
+parking_lot = "0.12"
+
+# Ordered float for hash maps
+ordered-float = "4.2"
+
+# wtpsplit dependencies (vendored)
+# ONNX Runtime
+ort = { version = "2.0.0-rc.9", features = ["load-dynamic", "half"] }
+
+# HuggingFace tokenizers (native Rust)
+tokenizers = "0.21"
+
+# Array operations
+ndarray = "0.16"
+half = { version = "2.4", features = ["num-traits"] }
+
+# HuggingFace Hub for model downloading
+hf-hub = "0.4"
+
+# Lazy static for constants
+once_cell = "1.20"
+
+[dev-dependencies]
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Property-based testing
+proptest = "1.4"
+
+# Snapshot testing
+insta = "1.34"
+
+# Temporary directories for tests
+tempfile = "3.8"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = 3
