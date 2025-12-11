@@ -1,59 +1,93 @@
 //! SIMD-optimized operations for SOM training.
 //!
 //! Uses f32 for better SIMD throughput (8 floats per AVX vs 4 doubles).
+//! Explicit portable SIMD for guaranteed vectorization.
 
 use rayon::prelude::*;
+use std::simd::{f32x8, num::SimdFloat};
 
-/// Compute squared Euclidean distance between two f32 slices.
-/// Optimized for autovectorization.
+/// Compute squared Euclidean distance between two f32 slices using explicit SIMD.
 #[inline]
 pub fn distance_squared_f32(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
 
-    // Process in chunks of 8 for AVX alignment
     let chunks = a.len() / 8;
-    let remainder = a.len() % 8;
+    let mut sum_vec = f32x8::splat(0.0);
 
-    let mut sum = 0.0f32;
-
-    // Main loop - should autovectorize
+    // Main SIMD loop
     for i in 0..chunks {
         let base = i * 8;
-        let d0 = a[base] - b[base];
-        let d1 = a[base + 1] - b[base + 1];
-        let d2 = a[base + 2] - b[base + 2];
-        let d3 = a[base + 3] - b[base + 3];
-        let d4 = a[base + 4] - b[base + 4];
-        let d5 = a[base + 5] - b[base + 5];
-        let d6 = a[base + 6] - b[base + 6];
-        let d7 = a[base + 7] - b[base + 7];
-
-        sum += d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3 +
-               d4 * d4 + d5 * d5 + d6 * d6 + d7 * d7;
+        let va = f32x8::from_slice(&a[base..]);
+        let vb = f32x8::from_slice(&b[base..]);
+        let diff = va - vb;
+        sum_vec += diff * diff;
     }
+
+    let mut sum = sum_vec.reduce_sum();
 
     // Handle remainder
     let base = chunks * 8;
-    for i in 0..remainder {
-        let d = a[base + i] - b[base + i];
+    for i in base..a.len() {
+        let d = a[i] - b[i];
         sum += d * d;
     }
 
     sum
 }
 
+/// Compute dot product using explicit SIMD (for cosine similarity with normalized vectors).
+#[inline]
+pub fn dot_product_simd(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len());
+
+    let chunks = a.len() / 8;
+    let mut sum_vec = f32x8::splat(0.0);
+
+    for i in 0..chunks {
+        let base = i * 8;
+        let va = f32x8::from_slice(&a[base..]);
+        let vb = f32x8::from_slice(&b[base..]);
+        sum_vec += va * vb;
+    }
+
+    let mut sum = sum_vec.reduce_sum();
+
+    let base = chunks * 8;
+    for i in base..a.len() {
+        sum += a[i] * b[i];
+    }
+
+    sum
+}
+
 /// Find BMU (Best Matching Unit) index for a single input vector.
-/// Returns the index of the neuron with minimum distance.
+/// Returns the index of the neuron with minimum squared distance.
 #[inline]
 pub fn find_bmu_f32(weights: &[f32], input: &[f32], num_neurons: usize, weight_dim: usize) -> usize {
     let mut best_idx = 0;
     let mut best_dist = f32::MAX;
 
-    for i in 0..num_neurons {
-        let offset = i * weight_dim;
-        let neuron_weights = &weights[offset..offset + weight_dim];
-        let dist = distance_squared_f32(neuron_weights, input);
+    // Process 4 neurons at a time to reduce loop overhead and improve ILP
+    let chunks = num_neurons / 4;
 
+    for chunk in 0..chunks {
+        let base = chunk * 4;
+
+        let dist0 = distance_squared_f32(&weights[base * weight_dim..(base + 1) * weight_dim], input);
+        let dist1 = distance_squared_f32(&weights[(base + 1) * weight_dim..(base + 2) * weight_dim], input);
+        let dist2 = distance_squared_f32(&weights[(base + 2) * weight_dim..(base + 3) * weight_dim], input);
+        let dist3 = distance_squared_f32(&weights[(base + 3) * weight_dim..(base + 4) * weight_dim], input);
+
+        if dist0 < best_dist { best_dist = dist0; best_idx = base; }
+        if dist1 < best_dist { best_dist = dist1; best_idx = base + 1; }
+        if dist2 < best_dist { best_dist = dist2; best_idx = base + 2; }
+        if dist3 < best_dist { best_dist = dist3; best_idx = base + 3; }
+    }
+
+    // Handle remaining neurons
+    for i in (chunks * 4)..num_neurons {
+        let offset = i * weight_dim;
+        let dist = distance_squared_f32(&weights[offset..offset + weight_dim], input);
         if dist < best_dist {
             best_dist = dist;
             best_idx = i;
@@ -75,6 +109,85 @@ pub fn find_all_bmus_parallel(
         .par_iter()
         .map(|(idx, input)| {
             let bmu = find_bmu_f32(weights, input, num_neurons, weight_dim);
+            (*idx, bmu)
+        })
+        .collect()
+}
+
+/// Find BMU using hierarchical search for large grids.
+/// First searches a coarse subgrid, then refines around the best match.
+/// Much faster for large grids (e.g., 128x128) with minimal accuracy loss.
+#[inline]
+pub fn find_bmu_hierarchical(
+    weights: &[f32],
+    input: &[f32],
+    grid_dim: usize,
+    weight_dim: usize,
+) -> usize {
+    let num_neurons = grid_dim * grid_dim;
+
+    // For small grids, just do exhaustive search
+    if grid_dim <= 32 {
+        return find_bmu_f32(weights, input, num_neurons, weight_dim);
+    }
+
+    // Coarse search: sample every 4th neuron in each dimension
+    let step = 4;
+    let mut best_coarse_idx = 0;
+    let mut best_coarse_dist = f32::MAX;
+
+    for row in (0..grid_dim).step_by(step) {
+        for col in (0..grid_dim).step_by(step) {
+            let idx = row * grid_dim + col;
+            let offset = idx * weight_dim;
+            let dist = distance_squared_f32(&weights[offset..offset + weight_dim], input);
+            if dist < best_coarse_dist {
+                best_coarse_dist = dist;
+                best_coarse_idx = idx;
+            }
+        }
+    }
+
+    // Fine search: check all neurons within radius of best coarse match
+    let coarse_row = (best_coarse_idx / grid_dim) as isize;
+    let coarse_col = (best_coarse_idx % grid_dim) as isize;
+    let search_radius: isize = (step as isize) + 1;
+
+    let mut best_idx = best_coarse_idx;
+    let mut best_dist = best_coarse_dist;
+
+    for dr in -search_radius..=search_radius {
+        for dc in -search_radius..=search_radius {
+            let row = coarse_row + dr;
+            let col = coarse_col + dc;
+
+            if row >= 0 && row < grid_dim as isize && col >= 0 && col < grid_dim as isize {
+                let idx = (row as usize) * grid_dim + (col as usize);
+                let offset = idx * weight_dim;
+                let dist = distance_squared_f32(&weights[offset..offset + weight_dim], input);
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = idx;
+                }
+            }
+        }
+    }
+
+    best_idx
+}
+
+/// Find BMUs for all inputs in parallel using hierarchical search.
+/// Faster for large grids with acceptable accuracy trade-off.
+pub fn find_all_bmus_parallel_fast(
+    weights: &[f32],
+    inputs: &[(usize, Vec<f32>)],
+    grid_dim: usize,
+    weight_dim: usize,
+) -> Vec<(usize, usize)> {
+    inputs
+        .par_iter()
+        .map(|(idx, input)| {
+            let bmu = find_bmu_hierarchical(weights, input, grid_dim, weight_dim);
             (*idx, bmu)
         })
         .collect()
@@ -116,33 +229,10 @@ pub fn normalize_f32(vec: &mut [f32]) {
 }
 
 /// Compute dot product of two f32 slices.
-/// SIMD-optimized with 8-wide unrolling for AVX.
+/// Alias for dot_product_simd for backwards compatibility.
 #[inline]
 pub fn dot_product_f32(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len());
-
-    let chunks = a.len() / 8;
-    let remainder = a.len() % 8;
-    let mut sum = 0.0f32;
-
-    for i in 0..chunks {
-        let base = i * 8;
-        sum += a[base] * b[base]
-            + a[base + 1] * b[base + 1]
-            + a[base + 2] * b[base + 2]
-            + a[base + 3] * b[base + 3]
-            + a[base + 4] * b[base + 4]
-            + a[base + 5] * b[base + 5]
-            + a[base + 6] * b[base + 6]
-            + a[base + 7] * b[base + 7];
-    }
-
-    let base = chunks * 8;
-    for i in 0..remainder {
-        sum += a[base + i] * b[base + i];
-    }
-
-    sum
+    dot_product_simd(a, b)
 }
 
 /// Scale a vector by a scalar.

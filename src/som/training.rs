@@ -13,7 +13,7 @@
 use crate::config::SomConfig;
 use crate::error::{ProteusError, Result};
 use crate::som::simd::{
-    add_vectors_f32, find_all_bmus_parallel, normalize_f32,
+    add_vectors_f32, find_all_bmus_parallel, find_all_bmus_parallel_fast, normalize_f32,
     precompute_neighborhood, update_weights_f32,
 };
 use crate::som::Som;
@@ -645,8 +645,8 @@ impl SomTrainer {
                 .map(|(i, (_, v))| (chunk_start + i, v.clone()))
                 .collect();
 
-            // Find BMUs for this chunk in parallel
-            let chunk_bmus = find_all_bmus_parallel(&neuron_weights, &chunk_inputs, num_neurons, weight_dim);
+            // Find BMUs for this chunk in parallel using hierarchical search
+            let chunk_bmus = find_all_bmus_parallel_fast(&neuron_weights, &chunk_inputs, dim, weight_dim);
 
             // Record BMUs
             for (sample_idx, bmu_idx) in chunk_bmus {
