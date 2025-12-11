@@ -73,6 +73,7 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 #![allow(clippy::needless_return)]
+#![feature(portable_simd)]
 
 pub mod config;
 pub mod error;

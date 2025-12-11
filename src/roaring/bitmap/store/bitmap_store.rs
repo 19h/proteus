@@ -5,7 +5,7 @@ use core::mem::size_of;
 use core::ops::{BitAndAssign, BitOrAssign, BitXorAssign, RangeInclusive, SubAssign};
 
 use super::{ArrayStore, Interval};
-
+use super::simd;
 
 use std::boxed::Box;
 
@@ -31,7 +31,7 @@ impl BitmapStore {
     }
 
     pub fn try_from(len: u64, bits: Box<[u64; BITMAP_LENGTH]>) -> Result<BitmapStore, Error> {
-        let actual_len = bits.iter().map(|v| v.count_ones() as u64).sum();
+        let actual_len = simd::popcount_simd(&bits);
         if len != actual_len {
             Err(Error { kind: ErrorKind::Cardinality { expected: len, actual: actual_len } })
         } else {
@@ -264,11 +264,11 @@ impl BitmapStore {
     }
 
     pub fn is_disjoint(&self, other: &BitmapStore) -> bool {
-        self.bits.iter().zip(other.bits.iter()).all(|(&i1, &i2)| (i1 & i2) == 0)
+        simd::is_disjoint_simd(&self.bits, &other.bits)
     }
 
     pub fn is_subset(&self, other: &Self) -> bool {
-        self.bits.iter().zip(other.bits.iter()).all(|(&i1, &i2)| (i1 & i2) == i1)
+        simd::is_subset_simd(&self.bits, &other.bits)
     }
 
     pub(crate) fn to_array_store(&self) -> ArrayStore {
@@ -291,28 +291,17 @@ impl BitmapStore {
     }
 
     pub fn min(&self) -> Option<u16> {
-        self.bits
-            .iter()
-            .enumerate()
-            .find(|&(_, &bit)| bit != 0)
-            .map(|(index, bit)| (index * 64 + (bit.trailing_zeros() as usize)) as u16)
+        simd::min_simd(&self.bits)
     }
 
     #[inline]
     pub fn max(&self) -> Option<u16> {
-        self.bits
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|&(_, &bit)| bit != 0)
-            .map(|(index, bit)| (index * 64 + (63 - bit.leading_zeros() as usize)) as u16)
+        simd::max_simd(&self.bits)
     }
 
     pub fn rank(&self, index: u16) -> u64 {
         let (key, bit) = (key(index), bit(index));
-
-        self.bits[..key].iter().map(|v| v.count_ones() as u64).sum::<u64>()
-            + (self.bits[key] << (63 - bit)).count_ones() as u64
+        simd::rank_simd(&self.bits, key, bit)
     }
 
     pub fn select(&self, n: u16) -> Option<u16> {
@@ -321,7 +310,7 @@ impl BitmapStore {
         for (key, value) in self.bits.iter().cloned().enumerate() {
             let len = value.count_ones() as u64;
             if n < len {
-                let index = select(value, n);
+                let index = simd::select_in_word(value, n);
                 return Some((64 * key as u64 + index) as u16);
             }
             n -= len;
@@ -331,7 +320,7 @@ impl BitmapStore {
     }
 
     pub fn intersection_len_bitmap(&self, other: &BitmapStore) -> u64 {
-        self.bits.iter().zip(other.bits.iter()).map(|(&a, &b)| (a & b).count_ones() as u64).sum()
+        simd::intersection_len_simd(&self.bits, &other.bits)
     }
 
     pub(crate) fn intersection_len_interval(&self, interval: &Interval) -> u64 {
@@ -429,7 +418,7 @@ impl BitmapStore {
     }
 
     pub(crate) fn internal_validate(&self) -> Result<(), &'static str> {
-        let expected_len: u64 = self.bits.iter().map(|bits| u64::from(bits.count_ones())).sum();
+        let expected_len = simd::popcount_simd(&self.bits);
         if self.len != expected_len {
             return Err("bitmap cardinality is incorrect");
         }
@@ -440,15 +429,8 @@ impl BitmapStore {
     }
 }
 
-// this can be done in 3 instructions on x86-64 with bmi2 with: tzcnt(pdep(1 << rank, value))
-// if n > value.count_ones() this method returns 0
-fn select(mut value: u64, n: u64) -> u64 {
-    // reset n of the least significant bits
-    for _ in 0..n {
-        value &= value - 1;
-    }
-    value.trailing_zeros() as u64
-}
+// Note: The scalar select function has been replaced by simd::select_in_word
+// which uses PDEP intrinsics on x86_64 BMI2 for O(1) performance.
 
 impl Default for BitmapStore {
     fn default() -> Self {
@@ -776,12 +758,15 @@ impl<B: Borrow<[u64; BITMAP_LENGTH]>> Iterator for BitmapIter<B> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let mut len: u32 = self.value.count_ones();
+        let mut len: u64 = self.value.count_ones() as u64;
         if self.key < self.key_back {
-            for v in &self.bits.borrow()[self.key as usize + 1..self.key_back as usize] {
-                len += v.count_ones();
-            }
-            len += self.value_back.count_ones();
+            // Use SIMD to count bits in the middle range
+            len += simd::popcount_word_range_simd(
+                self.bits.borrow(),
+                self.key as usize + 1,
+                self.key_back as usize,
+            );
+            len += self.value_back.count_ones() as u64;
         }
         (len as usize, Some(len as usize))
     }
@@ -822,6 +807,7 @@ pub fn bit(index: u16) -> usize {
     index as usize % 64
 }
 
+/// Generic bitmap operation - used as fallback for operations not yet SIMD optimized
 #[inline]
 fn op_bitmaps(bits1: &mut BitmapStore, bits2: &BitmapStore, op: impl Fn(&mut u64, u64)) {
     bits1.len = 0;
@@ -831,9 +817,33 @@ fn op_bitmaps(bits1: &mut BitmapStore, bits2: &BitmapStore, op: impl Fn(&mut u64
     }
 }
 
+/// SIMD-optimized BitOr implementation
+#[inline]
+fn op_bitmaps_or(bits1: &mut BitmapStore, bits2: &BitmapStore) {
+    bits1.len = simd::or_assign_simd(&mut bits1.bits, &bits2.bits);
+}
+
+/// SIMD-optimized BitAnd implementation
+#[inline]
+fn op_bitmaps_and(bits1: &mut BitmapStore, bits2: &BitmapStore) {
+    bits1.len = simd::and_assign_simd(&mut bits1.bits, &bits2.bits);
+}
+
+/// SIMD-optimized BitXor implementation
+#[inline]
+fn op_bitmaps_xor(bits1: &mut BitmapStore, bits2: &BitmapStore) {
+    bits1.len = simd::xor_assign_simd(&mut bits1.bits, &bits2.bits);
+}
+
+/// SIMD-optimized Sub (AND-NOT) implementation
+#[inline]
+fn op_bitmaps_sub(bits1: &mut BitmapStore, bits2: &BitmapStore) {
+    bits1.len = simd::sub_assign_simd(&mut bits1.bits, &bits2.bits);
+}
+
 impl BitOrAssign<&Self> for BitmapStore {
     fn bitor_assign(&mut self, rhs: &Self) {
-        op_bitmaps(self, rhs, BitOrAssign::bitor_assign);
+        op_bitmaps_or(self, rhs);
     }
 }
 
@@ -851,14 +861,14 @@ impl BitOrAssign<&ArrayStore> for BitmapStore {
 
 impl BitAndAssign<&Self> for BitmapStore {
     fn bitand_assign(&mut self, rhs: &Self) {
-        op_bitmaps(self, rhs, BitAndAssign::bitand_assign);
+        op_bitmaps_and(self, rhs);
     }
 }
 
 impl SubAssign<&Self> for BitmapStore {
     #[allow(clippy::suspicious_op_assign_impl)]
     fn sub_assign(&mut self, rhs: &Self) {
-        op_bitmaps(self, rhs, |l, r| *l &= !r);
+        op_bitmaps_sub(self, rhs);
     }
 }
 
@@ -877,7 +887,7 @@ impl SubAssign<&ArrayStore> for BitmapStore {
 
 impl BitXorAssign<&Self> for BitmapStore {
     fn bitxor_assign(&mut self, rhs: &Self) {
-        op_bitmaps(self, rhs, BitXorAssign::bitxor_assign);
+        op_bitmaps_xor(self, rhs);
     }
 }
 

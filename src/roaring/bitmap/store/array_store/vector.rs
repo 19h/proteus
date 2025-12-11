@@ -8,8 +8,6 @@
 //! While several more instructions, this is what is available through LLVM intrinsics
 //! and is portable.
 
-#![cfg(feature = "simd")]
-
 use super::scalar;
 use core::simd::cmp::{SimdPartialEq, SimdPartialOrd};
 use core::simd::{
@@ -453,7 +451,7 @@ fn matrix_cmp_u16(a: Simd<u16, 8>, b: Simd<u16, 8>) -> Mask<i16, 8> {
         | a.simd_eq(b.rotate_elements_left::<7>())
 }
 
-use super::array_store::visitor::BinaryOperationVisitor;
+use super::visitor::BinaryOperationVisitor;
 use core::simd::Swizzle;
 
 /// Append to vectors to an imaginary 16 lane vector,  shift the lanes right by 1, then

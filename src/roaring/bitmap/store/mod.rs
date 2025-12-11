@@ -1,6 +1,7 @@
 mod array_store;
 mod bitmap_store;
 mod interval_store;
+pub(crate) mod simd;
 
 use std::vec;
 use core::mem;
@@ -62,21 +63,8 @@ impl Store {
     pub fn from_lsb0_bytes(bytes: &[u8], byte_offset: usize) -> Option<Self> {
         assert!(byte_offset + bytes.len() <= BITMAP_LENGTH * mem::size_of::<u64>());
 
-        // It seems to be pretty considerably faster to count the bits
-        // using u64s than for each byte
-        let bits_set = {
-            let mut bits_set = 0;
-            let chunks = bytes.chunks_exact(mem::size_of::<u64>());
-            let remainder = chunks.remainder();
-            for chunk in chunks {
-                let chunk = u64::from_ne_bytes(chunk.try_into().unwrap());
-                bits_set += u64::from(chunk.count_ones());
-            }
-            for byte in remainder {
-                bits_set += u64::from(byte.count_ones());
-            }
-            bits_set
-        };
+        // Use SIMD for fast population count
+        let bits_set = simd::popcount_bytes_simd(bytes);
         if bits_set == 0 {
             return None;
         }
@@ -303,20 +291,7 @@ impl Store {
                     })
                     .1
             }
-            Bitmap(bits) => {
-                let mut num_runs = 0u64;
-
-                for i in 0..BITMAP_LENGTH - 1 {
-                    let word = bits.as_array()[i];
-                    let next_word = bits.as_array()[i + 1];
-                    num_runs +=
-                        ((word << 1) & !word).count_ones() as u64 + ((word >> 63) & !next_word);
-                }
-
-                let last = bits.as_array()[BITMAP_LENGTH - 1];
-                num_runs += ((last << 1) & !last).count_ones() as u64 + (last >> 63);
-                num_runs
-            }
+            Bitmap(bits) => simd::count_runs_simd(bits.as_array()),
             Run(intervals) => intervals.run_amount(),
         }
     }

@@ -257,10 +257,7 @@ impl ArrayStore {
 
     pub fn intersection_len(&self, other: &Self) -> u64 {
         let mut visitor = CardinalityCounter::new();
-        #[cfg(feature = "never")]
         vector::and(self.as_slice(), other.as_slice(), &mut visitor);
-        #[cfg(not(feature = "simd"))]
-        scalar::and(self.as_slice(), other.as_slice(), &mut visitor);
         visitor.into_inner()
     }
 
@@ -419,10 +416,7 @@ impl BitOr<Self> for &ArrayStore {
         #[allow(clippy::suspicious_arithmetic_impl)]
         let capacity = self.vec.len() + rhs.vec.len();
         let mut visitor = VecWriter::new(capacity);
-        #[cfg(feature = "never")]
         vector::or(self.as_slice(), rhs.as_slice(), &mut visitor);
-        #[cfg(not(feature = "simd"))]
-        scalar::or(self.as_slice(), rhs.as_slice(), &mut visitor);
         ArrayStore::from_vec_unchecked(visitor.into_inner())
     }
 }
@@ -432,10 +426,7 @@ impl BitAnd<Self> for &ArrayStore {
 
     fn bitand(self, rhs: Self) -> Self::Output {
         let mut visitor = VecWriter::new(self.vec.len().min(rhs.vec.len()));
-        #[cfg(feature = "never")]
         vector::and(self.as_slice(), rhs.as_slice(), &mut visitor);
-        #[cfg(not(feature = "simd"))]
-        scalar::and(self.as_slice(), rhs.as_slice(), &mut visitor);
         ArrayStore::from_vec_unchecked(visitor.into_inner())
     }
 }
@@ -443,20 +434,9 @@ impl BitAnd<Self> for &ArrayStore {
 impl BitAndAssign<&Self> for ArrayStore {
     #[allow(clippy::suspicious_op_assign_impl)]
     fn bitand_assign(&mut self, rhs: &Self) {
-        #[cfg(feature = "never")]
-        {
-            let mut visitor = VecWriter::new(self.vec.len().min(rhs.vec.len()));
-            vector::and(self.as_slice(), rhs.as_slice(), &mut visitor);
-            self.vec = visitor.into_inner()
-        }
-        #[cfg(not(feature = "simd"))]
-        {
-            let mut i = 0;
-            self.retain(|x| {
-                i += rhs.iter().skip(i).position(|y| *y >= x).unwrap_or(rhs.vec.len());
-                rhs.vec.get(i).is_some_and(|y| x == *y)
-            });
-        }
+        let mut visitor = VecWriter::new(self.vec.len().min(rhs.vec.len()));
+        vector::and(self.as_slice(), rhs.as_slice(), &mut visitor);
+        self.vec = visitor.into_inner()
     }
 }
 
@@ -471,10 +451,7 @@ impl Sub<Self> for &ArrayStore {
 
     fn sub(self, rhs: Self) -> Self::Output {
         let mut visitor = VecWriter::new(self.vec.len());
-        #[cfg(feature = "never")]
         vector::sub(self.as_slice(), rhs.as_slice(), &mut visitor);
-        #[cfg(not(feature = "simd"))]
-        scalar::sub(self.as_slice(), rhs.as_slice(), &mut visitor);
         ArrayStore::from_vec_unchecked(visitor.into_inner())
     }
 }
@@ -482,20 +459,9 @@ impl Sub<Self> for &ArrayStore {
 impl SubAssign<&Self> for ArrayStore {
     #[allow(clippy::suspicious_op_assign_impl)]
     fn sub_assign(&mut self, rhs: &Self) {
-        #[cfg(feature = "never")]
-        {
-            let mut visitor = VecWriter::new(self.vec.len().min(rhs.vec.len()));
-            vector::sub(self.as_slice(), rhs.as_slice(), &mut visitor);
-            self.vec = visitor.into_inner()
-        }
-        #[cfg(not(feature = "simd"))]
-        {
-            let mut i = 0;
-            self.retain(|x| {
-                i += rhs.iter().skip(i).position(|y| *y >= x).unwrap_or(rhs.vec.len());
-                rhs.vec.get(i).map_or(true, |y| x != *y)
-            });
-        }
+        let mut visitor = VecWriter::new(self.vec.len());
+        vector::sub(self.as_slice(), rhs.as_slice(), &mut visitor);
+        self.vec = visitor.into_inner()
     }
 }
 
@@ -512,10 +478,7 @@ impl BitXor<Self> for &ArrayStore {
         #[allow(clippy::suspicious_arithmetic_impl)]
         let capacity = self.vec.len() + rhs.vec.len();
         let mut visitor = VecWriter::new(capacity);
-        #[cfg(feature = "never")]
         vector::xor(self.as_slice(), rhs.as_slice(), &mut visitor);
-        #[cfg(not(feature = "simd"))]
-        scalar::xor(self.as_slice(), rhs.as_slice(), &mut visitor);
         ArrayStore::from_vec_unchecked(visitor.into_inner())
     }
 }
