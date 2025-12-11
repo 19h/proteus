@@ -1120,6 +1120,7 @@ dependencies = [
  "console",
  "number_prefix",
  "portable-atomic",
+ "rayon",
  "unicode-width",
  "web-time",
 ]
@@ -1733,6 +1734,7 @@ dependencies = [
  "env_logger",
  "half",
  "hf-hub",
+ "indicatif",
  "insta",
  "log",
  "memmap2",

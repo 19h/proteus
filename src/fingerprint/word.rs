@@ -3,6 +3,7 @@
 use crate::config::FingerprintConfig;
 use crate::error::{ProteusError, Result};
 use crate::fingerprint::Sdr;
+use indicatif::ProgressBar;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -83,12 +84,14 @@ impl WordFingerprinter {
     ///
     /// Each word's fingerprint consists of the positions where it was most
     /// frequently matched during SOM training.
+    ///
+    /// If a progress bar is provided, it will be updated during processing.
     pub fn create_fingerprints(
         &mut self,
         word_to_bmus: &HashMap<String, Vec<usize>>,
-        word_frequencies: Option<&HashMap<String, f64>>,
+        progress: Option<&ProgressBar>,
     ) {
-        for (word, bmus) in word_to_bmus {
+        for (i, (word, bmus)) in word_to_bmus.iter().enumerate() {
             // Count frequency of each position
             let mut position_counts: HashMap<usize, usize> = HashMap::new();
             for &bmu in bmus {
@@ -106,19 +109,25 @@ impl WordFingerprinter {
                 .map(|(pos, _)| pos as u32)
                 .collect();
 
-            let frequency = word_frequencies
-                .and_then(|f| f.get(word))
-                .copied()
-                .unwrap_or(0.0);
-
             let fingerprint = WordFingerprint::with_frequency(
                 word.clone(),
                 &positions,
                 self.grid_size,
-                frequency,
+                0.0, // Frequency is computed later if needed
             );
 
             self.fingerprints.insert(word.clone(), fingerprint);
+
+            // Update progress bar
+            if let Some(pb) = progress {
+                if i % 1000 == 0 {
+                    pb.set_position(i as u64);
+                }
+            }
+        }
+
+        if let Some(pb) = progress {
+            pb.set_position(word_to_bmus.len() as u64);
         }
     }
 

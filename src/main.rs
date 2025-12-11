@@ -3,7 +3,8 @@
 //! Command-line interface for training and using semantic retinas.
 
 use clap::{Parser, Subcommand};
-use log::{error, info};
+use indicatif::{ProgressBar, ProgressStyle, HumanDuration};
+use log::error;
 use proteus::{
     FingerprintConfig, Retina, Result, Som, SomConfig, SomTrainer, Tokenizer,
     WordFingerprinter,
@@ -12,6 +13,7 @@ use proteus::som::training::{WordEmbeddings, DEFAULT_EMBEDDING_DIM};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::time::Instant;
 
 #[derive(Parser)]
 #[command(name = "proteus")]
@@ -153,33 +155,71 @@ fn train_retina(
     iterations: usize,
     seed: Option<u64>,
 ) -> Result<()> {
-    info!("Training retina from {:?}", input);
+    let start_time = Instant::now();
 
-    // Read corpus
+    println!("Proteus Semantic Folding Engine");
+    println!("   Training retina from: {}", input.display());
+    println!();
+
+    // Create progress bar style
+    let spinner_style = ProgressStyle::default_spinner()
+        .template("{spinner:.cyan} {msg}")
+        .unwrap();
+
+    let bar_style = ProgressStyle::default_bar()
+        .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) ETA: {eta}")
+        .unwrap()
+        .progress_chars("█▓▒░  ");
+
+    // Step 1: Load corpus
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(spinner_style.clone());
+    pb.set_message("Loading corpus...");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
     let file = File::open(&input)?;
     let reader = BufReader::new(file);
     let documents: Vec<String> = reader.lines().map_while(|l| l.ok()).collect();
 
-    info!("Loaded {} documents", documents.len());
+    pb.finish_and_clear();
+    println!("✓ Loaded {} documents", format_number(documents.len()));
 
-    // Tokenize and extract context windows
+    // Step 2: Extract context windows
+    let pb = ProgressBar::new(documents.len() as u64);
+    pb.set_style(bar_style.clone());
+    pb.set_message("Extracting context windows...");
+
     let tokenizer = Tokenizer::default_config();
     let mut contexts: Vec<(String, Vec<String>)> = Vec::new();
 
-    for doc in &documents {
+    for (i, doc) in documents.iter().enumerate() {
         for (center, context) in tokenizer.context_windows_as_strings(doc, 2) {
             contexts.push((center, context));
         }
+        if i % 10000 == 0 {
+            pb.set_position(i as u64);
+        }
     }
+    pb.finish_and_clear();
+    println!("✓ Extracted {} context windows", format_number(contexts.len()));
 
-    info!("Extracted {} context windows", contexts.len());
+    // Step 3: Learn embeddings
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(spinner_style.clone());
+    pb.set_message(format!("Learning word embeddings ({} dimensions)...", DEFAULT_EMBEDDING_DIM));
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
-    // Learn compact word embeddings (100-dimensional, not vocabulary-sized!)
-    info!("Learning word embeddings ({} dimensions)...", DEFAULT_EMBEDDING_DIM);
     let embeddings = WordEmbeddings::from_contexts(&contexts, DEFAULT_EMBEDDING_DIM, seed);
-    info!("Learned embeddings for {} words", embeddings.len());
 
-    // Configure SOM with compact embedding dimension
+    pb.finish_and_clear();
+    println!("✓ Learned embeddings for {} words", format_number(embeddings.len()));
+
+    // Step 4: Initialize SOM
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(spinner_style.clone());
+    pb.set_message(format!("Initializing SOM ({}x{} = {} neurons)...", dimension, dimension, dimension * dimension));
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
     let som_config = SomConfig {
         dimension,
         weight_dimension: DEFAULT_EMBEDDING_DIM,
@@ -188,28 +228,38 @@ fn train_retina(
         ..Default::default()
     };
 
-    info!(
-        "Initializing SOM ({0}x{0} = {1} neurons, {2}-dim weights)",
-        dimension,
-        dimension * dimension,
-        DEFAULT_EMBEDDING_DIM
-    );
-
     let mut som = Som::new(&som_config);
     let mut trainer = SomTrainer::new(som_config);
 
-    info!("Training SOM...");
-    let word_to_bmus = trainer.train_fast(&mut som, &embeddings, &contexts)?;
+    pb.finish_and_clear();
+    println!("✓ Initialized SOM ({}x{} = {} neurons, {}-dim weights)",
+        dimension, dimension, dimension * dimension, DEFAULT_EMBEDDING_DIM);
 
-    info!("Generating fingerprints...");
+    // Step 5: Train SOM with progress display
+    println!();
+    println!("Training SOM...");
+
+    let word_to_bmus = trainer.train_fast_with_progress(&mut som, &embeddings, &contexts, |_, _, _, _| {})?;
+
+    // Step 6: Generate fingerprints
+    let pb = ProgressBar::new(word_to_bmus.len() as u64);
+    pb.set_style(bar_style.clone());
+    pb.set_message("Generating fingerprints...");
+
     let grid_size = (dimension * dimension) as u32;
     let fp_config = FingerprintConfig::default();
     let mut fingerprinter = WordFingerprinter::new(fp_config.clone(), grid_size);
-    fingerprinter.create_fingerprints(&word_to_bmus, None);
+    fingerprinter.create_fingerprints(&word_to_bmus, Some(&pb));
 
-    info!("Created {} word fingerprints", fingerprinter.len());
+    pb.finish_and_clear();
+    println!("✓ Created {} word fingerprints", format_number(fingerprinter.len()));
 
-    // Create and save retina
+    // Step 7: Save retina
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(spinner_style);
+    pb.set_message("Saving retina...");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
     let retina = Retina::with_index(
         fingerprinter.into_fingerprints(),
         dimension as u32,
@@ -217,9 +267,31 @@ fn train_retina(
     );
     retina.save(&output)?;
 
-    info!("Saved retina to {:?}", output);
+    pb.finish_and_clear();
+    println!("✓ Saved retina to {}", output.display());
+
+    // Summary
+    let elapsed = start_time.elapsed();
+    println!();
+    println!("Training complete in {}", HumanDuration(elapsed));
+    println!("   Vocabulary: {} words", format_number(retina.vocabulary_size()));
+    println!("   Grid: {}x{} ({} neurons)", dimension, dimension, dimension * dimension);
+    println!("   Output: {}", output.display());
 
     Ok(())
+}
+
+/// Format large numbers with commas for readability
+fn format_number(n: usize) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
 }
 
 fn fingerprint_text(retina_path: PathBuf, text: String, format: String) -> Result<()> {
