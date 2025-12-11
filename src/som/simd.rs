@@ -1,32 +1,76 @@
 //! SIMD-optimized operations for SOM training.
 //!
-//! Uses f32 for better SIMD throughput (8 floats per AVX vs 4 doubles).
+//! Uses f32 for better SIMD throughput.
 //! Explicit portable SIMD for guaranteed vectorization.
+//!
+//! Architecture-specific optimizations:
+//! - ARM (NEON): f32x4 (native 128-bit registers)
+//! - x86_64 (AVX): f32x8 (native 256-bit registers)
 
 use rayon::prelude::*;
-use std::simd::{f32x8, num::SimdFloat};
+use std::simd::num::SimdFloat;
+
+// Use architecture-appropriate vector width
+#[cfg(target_arch = "aarch64")]
+use std::simd::f32x4 as f32xN;
+#[cfg(target_arch = "aarch64")]
+const LANE_COUNT: usize = 4;
+
+#[cfg(target_arch = "x86_64")]
+use std::simd::f32x8 as f32xN;
+#[cfg(target_arch = "x86_64")]
+const LANE_COUNT: usize = 8;
+
+// Fallback for other architectures
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+use std::simd::f32x4 as f32xN;
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+const LANE_COUNT: usize = 4;
 
 /// Compute squared Euclidean distance between two f32 slices using explicit SIMD.
+/// Automatically uses optimal vector width for the target architecture.
 #[inline]
 pub fn distance_squared_f32(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
 
-    let chunks = a.len() / 8;
-    let mut sum_vec = f32x8::splat(0.0);
+    // Process 4 vectors per iteration for better ILP
+    let stride = LANE_COUNT * 4;
+    let chunks = a.len() / stride;
+    let mut sum0 = f32xN::splat(0.0);
+    let mut sum1 = f32xN::splat(0.0);
+    let mut sum2 = f32xN::splat(0.0);
+    let mut sum3 = f32xN::splat(0.0);
 
-    // Main SIMD loop
     for i in 0..chunks {
-        let base = i * 8;
-        let va = f32x8::from_slice(&a[base..]);
-        let vb = f32x8::from_slice(&b[base..]);
-        let diff = va - vb;
-        sum_vec += diff * diff;
+        let base = i * stride;
+
+        let va0 = f32xN::from_slice(&a[base..]);
+        let vb0 = f32xN::from_slice(&b[base..]);
+        let diff0 = va0 - vb0;
+        sum0 += diff0 * diff0;
+
+        let va1 = f32xN::from_slice(&a[base + LANE_COUNT..]);
+        let vb1 = f32xN::from_slice(&b[base + LANE_COUNT..]);
+        let diff1 = va1 - vb1;
+        sum1 += diff1 * diff1;
+
+        let va2 = f32xN::from_slice(&a[base + LANE_COUNT * 2..]);
+        let vb2 = f32xN::from_slice(&b[base + LANE_COUNT * 2..]);
+        let diff2 = va2 - vb2;
+        sum2 += diff2 * diff2;
+
+        let va3 = f32xN::from_slice(&a[base + LANE_COUNT * 3..]);
+        let vb3 = f32xN::from_slice(&b[base + LANE_COUNT * 3..]);
+        let diff3 = va3 - vb3;
+        sum3 += diff3 * diff3;
     }
 
+    // Combine accumulators
+    let sum_vec = sum0 + sum1 + sum2 + sum3;
     let mut sum = sum_vec.reduce_sum();
 
     // Handle remainder
-    let base = chunks * 8;
+    let base = chunks * stride;
     for i in base..a.len() {
         let d = a[i] - b[i];
         sum += d * d;
@@ -35,24 +79,43 @@ pub fn distance_squared_f32(a: &[f32], b: &[f32]) -> f32 {
     sum
 }
 
-/// Compute dot product using explicit SIMD (for cosine similarity with normalized vectors).
+/// Compute dot product using explicit SIMD.
+/// Automatically uses optimal vector width for the target architecture.
 #[inline]
 pub fn dot_product_simd(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());
 
-    let chunks = a.len() / 8;
-    let mut sum_vec = f32x8::splat(0.0);
+    let stride = LANE_COUNT * 4;
+    let chunks = a.len() / stride;
+    let mut sum0 = f32xN::splat(0.0);
+    let mut sum1 = f32xN::splat(0.0);
+    let mut sum2 = f32xN::splat(0.0);
+    let mut sum3 = f32xN::splat(0.0);
 
     for i in 0..chunks {
-        let base = i * 8;
-        let va = f32x8::from_slice(&a[base..]);
-        let vb = f32x8::from_slice(&b[base..]);
-        sum_vec += va * vb;
+        let base = i * stride;
+
+        let va0 = f32xN::from_slice(&a[base..]);
+        let vb0 = f32xN::from_slice(&b[base..]);
+        sum0 += va0 * vb0;
+
+        let va1 = f32xN::from_slice(&a[base + LANE_COUNT..]);
+        let vb1 = f32xN::from_slice(&b[base + LANE_COUNT..]);
+        sum1 += va1 * vb1;
+
+        let va2 = f32xN::from_slice(&a[base + LANE_COUNT * 2..]);
+        let vb2 = f32xN::from_slice(&b[base + LANE_COUNT * 2..]);
+        sum2 += va2 * vb2;
+
+        let va3 = f32xN::from_slice(&a[base + LANE_COUNT * 3..]);
+        let vb3 = f32xN::from_slice(&b[base + LANE_COUNT * 3..]);
+        sum3 += va3 * vb3;
     }
 
+    let sum_vec = sum0 + sum1 + sum2 + sum3;
     let mut sum = sum_vec.reduce_sum();
 
-    let base = chunks * 8;
+    let base = chunks * stride;
     for i in base..a.len() {
         sum += a[i] * b[i];
     }

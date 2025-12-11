@@ -645,8 +645,8 @@ impl SomTrainer {
                 .map(|(i, (_, v))| (chunk_start + i, v.clone()))
                 .collect();
 
-            // Find BMUs for this chunk in parallel using hierarchical search
-            let chunk_bmus = find_all_bmus_parallel_fast(&neuron_weights, &chunk_inputs, dim, weight_dim);
+            // Find BMUs for this chunk in parallel (exact search for accurate fingerprints)
+            let chunk_bmus = find_all_bmus_parallel(&neuron_weights, &chunk_inputs, num_neurons, weight_dim);
 
             // Record BMUs
             for (sample_idx, bmu_idx) in chunk_bmus {
