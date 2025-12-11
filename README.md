@@ -21,6 +21,7 @@ Proteus implements [Semantic Folding](https://www.cortical.io/science/), a biolo
 - [Performance](#performance)
 - [API Reference](#api-reference)
 - [Testing](#testing)
+- [Scaling to Terabytes & Cross-Lingual Alignment](#scaling-to-terabytes--cross-lingual-alignment)
 - [Contributing](#contributing)
 - [License](#license)
 - [Acknowledgments](#acknowledgments)
@@ -783,6 +784,392 @@ Test coverage includes:
 - Integration tests for end-to-end workflows
 - Property-based testing with proptest
 - Snapshot testing with insta
+
+## Scaling to Terabytes & Cross-Lingual Alignment
+
+This section documents the architectural considerations and future roadmap for scaling Proteus to terabyte-scale corpora and enabling cross-lingual semantic fingerprinting.
+
+### Current Limitations
+
+The current implementation loads all training data into memory:
+
+```rust
+// Current approach - O(corpus_size) memory
+let documents: Vec<String> = reader.lines().collect();
+for doc in &documents {
+    for (center, context) in tokenizer.context_windows(doc, 2) {
+        contexts.push((center, context));  // All contexts in RAM
+    }
+}
+```
+
+This works well for corpora up to ~10GB but becomes impractical for terabyte-scale training.
+
+### Terabyte-Scale Training Architecture
+
+#### 1. Streaming Context Extraction
+
+Replace in-memory context storage with a streaming pipeline:
+
+```rust
+/// Streaming iterator over sharded context files
+trait ContextStream: Iterator<Item = (String, Vec<String>)> {
+    fn shuffle_window(&mut self, buffer_size: usize);
+    fn sample(&mut self, rate: f64) -> impl ContextStream;
+}
+
+/// Phase 1: Extract contexts to sharded files on disk
+struct ContextExtractor {
+    output_dir: PathBuf,
+    shard_size: usize,  // e.g., 10M contexts per shard
+    current_shard: BufWriter<File>,
+}
+
+/// Phase 2: Memory-mapped streaming with shuffle buffer
+struct ShardedContextReader {
+    shards: Vec<PathBuf>,
+    shuffle_buffer: Vec<(String, Vec<String>)>,
+    buffer_size: usize,  // e.g., 1M contexts for local shuffling
+}
+```
+
+#### 2. Distributed Word Embeddings
+
+Use deterministic hashing for consistent random vectors across workers:
+
+```rust
+/// Same word always gets same vector - no coordination needed
+fn word_to_random_vector(word: &str, dim: usize, global_seed: u64) -> Vec<f32> {
+    let seed = hash(global_seed, word);
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect()
+}
+```
+
+This enables distributed workers to compute identical embeddings independently.
+
+#### 3. Hierarchical SOM Training
+
+For massive vocabularies, use a multi-resolution SOM hierarchy:
+
+```rust
+struct HierarchicalSom {
+    /// Level 0: Coarse clusters (32×32 = 1K neurons)
+    level0: Som,
+
+    /// Level 1: Per-cluster refinement (each has 64×64 local SOM)
+    level1: HashMap<usize, Som>,
+
+    // Final fingerprint = [level0_pos * 4096 + level1_pos]
+    // Provides 1K × 4K = 4M effective positions
+}
+```
+
+#### 4. Distributed Training Topology
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Coordinator Node                             │
+│  - Tracks global vocabulary statistics                          │
+│  - Aggregates SOM weight updates (parameter server)             │
+│  - Schedules training batches across workers                    │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+        ┌───────────────────┼───────────────────┐
+        │                   │                   │
+        ▼                   ▼                   ▼
+┌───────────────┐   ┌───────────────┐   ┌───────────────┐
+│   Worker 1    │   │   Worker 2    │   │   Worker N    │
+│  Shards 1-100 │   │ Shards 101-200│   │    ...        │
+│               │   │               │   │               │
+│ 1. Stream ctx │   │ 1. Stream ctx │   │               │
+│ 2. Local emb  │   │ 2. Local emb  │   │               │
+│ 3. Find BMUs  │   │ 3. Find BMUs  │   │               │
+│ 4. Send deltas│   │ 4. Send deltas│   │               │
+└───────────────┘   └───────────────┘   └───────────────┘
+```
+
+Key techniques:
+- **Hogwild SGD**: Approximate asynchronous SOM updates
+- **Minibatch accumulation**: Collect BMU statistics before weight sync
+- **Vocabulary filtering**: Discard words with frequency < threshold
+
+Target: 1TB corpus processed in ~24 hours on a 10-node cluster.
+
+#### 5. Incremental Learning
+
+Add new vocabulary without full retraining:
+
+```rust
+impl Retina {
+    /// Expand vocabulary from additional corpus
+    fn incremental_train(
+        &mut self,
+        new_contexts: impl ContextStream,
+        frozen_som: bool,  // If true, only assign BMUs (no weight updates)
+    ) -> Result<()> {
+        // 1. For new words: assign BMUs based on context similarity
+        // 2. For existing words: update BMU statistics
+        // 3. Optionally fine-tune SOM with small learning rate
+        // 4. Recompute fingerprints for affected words
+    }
+}
+```
+
+### Cross-Lingual Fingerprint Alignment
+
+The goal is semantic equivalence across languages:
+```
+fingerprint("king", english_retina) ≈ fingerprint("roi", french_retina)
+```
+
+#### The Alignment Problem
+
+Independently trained language models have:
+- **Isomorphic structure**: Same underlying concepts exist
+- **Arbitrary orientation**: Different coordinate systems
+- **Scale differences**: Varying corpus statistics
+
+#### Approach 1: Post-hoc Alignment (Procrustes)
+
+Train separately, then align using anchor pairs:
+
+```rust
+/// Orthogonal Procrustes alignment between SOM spaces
+struct SomAlignment {
+    rotation: Matrix,      // Rotation/reflection (dim × dim)
+    translation: Vec<f64>, // Translation vector
+    scale: f64,            // Scaling factor
+}
+
+impl SomAlignment {
+    /// Learn alignment from bilingual dictionary
+    fn from_anchors(
+        source_retina: &Retina,
+        target_retina: &Retina,
+        anchors: &[(String, String)],  // e.g., [("king", "roi"), ("water", "eau"), ...]
+    ) -> Result<Self> {
+        // 1. Extract centroid positions for anchor words
+        let source_positions = anchors.iter()
+            .filter_map(|(src, _)| source_retina.get_centroid(src))
+            .collect();
+        let target_positions = anchors.iter()
+            .filter_map(|(_, tgt)| target_retina.get_centroid(tgt))
+            .collect();
+
+        // 2. Solve: min ||s * R * source + t - target||²
+        //    Subject to: R is orthogonal
+        procrustes_align(&source_positions, &target_positions)
+    }
+
+    /// Transform fingerprint from source to aligned target space
+    fn transform(&self, fp: &Sdr, grid_dim: u32) -> Sdr {
+        let transformed: Vec<u32> = fp.iter()
+            .map(|pos| {
+                let (row, col) = (pos / grid_dim, pos % grid_dim);
+                let (new_row, new_col) = self.transform_point(row, col);
+                (new_row * grid_dim + new_col).clamp(0, grid_dim * grid_dim - 1)
+            })
+            .collect();
+        Sdr::from_positions(&transformed, grid_dim * grid_dim)
+    }
+}
+```
+
+Requires ~5,000-10,000 anchor pairs per language pair.
+
+#### Approach 2: Joint Multilingual Training (Recommended)
+
+Train a single shared semantic space across all languages:
+
+```rust
+struct MultilingualTrainer {
+    /// Shared SOM - all languages map to same grid
+    shared_som: Som,
+
+    /// Language-specific tokenizers
+    tokenizers: HashMap<LangCode, Tokenizer>,
+
+    /// Parallel corpus provides alignment signal
+    parallel_corpus: Vec<ParallelSentence>,
+}
+
+struct ParallelSentence {
+    // Same meaning expressed in different languages
+    sentences: HashMap<LangCode, String>,
+}
+
+impl MultilingualTrainer {
+    fn train(&mut self, corpora: HashMap<LangCode, impl ContextStream>) {
+        // Phase 1: Interleaved monolingual training
+        // - Sample contexts from all languages uniformly
+        // - Train shared SOM with mixed input
+        // - Words cluster by meaning, not by language
+
+        // Phase 2: Parallel corpus alignment
+        for parallel in &self.parallel_corpus {
+            // Extract contexts from translation pairs
+            // Apply soft constraint: translations → similar BMUs
+            self.align_translations(parallel);
+        }
+
+        // Phase 3: Cross-lingual analogy preservation
+        // Verify: king:queen :: roi:reine :: könig:königin
+    }
+
+    fn align_translations(&mut self, parallel: &ParallelSentence) {
+        // Cross-lingual loss: penalize BMU distance between translations
+        // Modified SOM update pulls translation pairs together
+    }
+}
+```
+
+#### Cross-Lingual Training Signal
+
+The key insight: **parallel corpora provide natural alignment**
+
+```rust
+/// Loss function during training
+fn cross_lingual_loss(
+    word_en: &str,
+    word_fr: &str,  // Translation of word_en
+    bmu_en: usize,
+    bmu_fr: usize,
+    som_dimension: usize,
+) -> f64 {
+    let (row_en, col_en) = (bmu_en / som_dimension, bmu_en % som_dimension);
+    let (row_fr, col_fr) = (bmu_fr / som_dimension, bmu_fr % som_dimension);
+
+    // Squared distance on SOM grid
+    (row_en as f64 - row_fr as f64).powi(2) +
+    (col_en as f64 - col_fr as f64).powi(2)
+}
+```
+
+#### Multilingual Retina Format
+
+```rust
+struct MultilingualRetina {
+    /// Shared semantic grid (all languages)
+    grid_dimension: u32,
+
+    /// Per-language vocabularies mapped to shared grid
+    languages: HashMap<LangCode, LanguageData>,
+
+    /// Unified inverted index (positions → words from all languages)
+    shared_index: InvertedIndex,
+}
+
+struct LanguageData {
+    fingerprints: HashMap<String, WordFingerprint>,
+    tokenizer_config: TokenizerConfig,
+    stopwords: HashSet<String>,
+}
+
+impl MultilingualRetina {
+    /// Fingerprint text in any supported language
+    fn fingerprint(&self, text: &str, lang: LangCode) -> Sdr {
+        let lang_data = &self.languages[&lang];
+        // Language-specific tokenization, shared fingerprint space
+        self.fingerprint_with_tokenizer(text, &lang_data.tokenizer_config)
+    }
+
+    /// Cross-lingual similarity (e.g., English query vs French document)
+    fn cross_lingual_similarity(
+        &self,
+        text1: &str, lang1: LangCode,
+        text2: &str, lang2: LangCode,
+    ) -> f64 {
+        let fp1 = self.fingerprint(text1, lang1);
+        let fp2 = self.fingerprint(text2, lang2);
+        fp1.cosine_similarity(&fp2)  // Works because shared space!
+    }
+
+    /// Find translations (words in target language with similar fingerprints)
+    fn find_translations(
+        &self,
+        word: &str,
+        source_lang: LangCode,
+        target_lang: LangCode,
+        k: usize
+    ) -> Vec<(String, f64)> {
+        let source_fp = self.languages[&source_lang].fingerprints.get(word)?;
+        self.search_in_language(&source_fp.fingerprint, target_lang, k)
+    }
+}
+```
+
+#### Alignment Data Sources
+
+| Source | Pairs | Languages | Quality |
+|--------|-------|-----------|---------|
+| Wikipedia parallel titles | 50M+ | 300+ | Medium |
+| Wiktionary translations | 10M+ | 100+ | High |
+| OPUS parallel corpora | 100B+ tokens | 100+ | Varies |
+| Panlex | 25M+ | 5,700+ | Medium |
+| MUSE bilingual dictionaries | 100K+ per pair | 100+ | Curated |
+
+#### Why Semantic Folding Enables Cross-Lingual Alignment
+
+The distributional hypothesis transcends language boundaries:
+- **"roi"** in French appears in contexts similar to **"king"** in English
+- Both words co-occur with: governance, crown, throne, palace, reign...
+- SOM training naturally clusters words by contextual usage
+- Parallel corpora provide the bridge to align coordinate systems
+
+This is fundamentally different from (and complementary to) approaches like:
+- **Word2Vec/FastText alignment**: Requires large parallel corpora
+- **Multilingual BERT**: Requires massive compute for pretraining
+- **Dictionary-based MT**: Limited by dictionary coverage
+
+SDR alignment preserves the interpretability and efficiency of semantic folding while enabling cross-lingual applications.
+
+### Implementation Roadmap
+
+#### Phase 1: Streaming Infrastructure
+- [ ] Implement `ContextExtractor` for sharded disk output
+- [ ] Implement `ShardedContextReader` with shuffle buffer
+- [ ] Add memory-mapped context file format
+- [ ] Target: 100M contexts/hour on single node
+
+#### Phase 2: Distributed Training
+- [ ] Implement deterministic word→vector hashing
+- [ ] Add vocabulary filtering (min frequency threshold)
+- [ ] Implement distributed BMU computation
+- [ ] Add parameter server for SOM weight aggregation
+- [ ] Target: 1TB corpus in 24 hours on 10 nodes
+
+#### Phase 3: Cross-Lingual Foundation
+- [ ] Define `MultilingualRetina` format and serialization
+- [ ] Implement shared SOM training with language interleaving
+- [ ] Add parallel corpus loading (OPUS format)
+- [ ] Implement cross-lingual loss function
+
+#### Phase 4: Alignment Refinement
+- [ ] Implement Procrustes post-hoc alignment (fallback method)
+- [ ] Add bilingual dictionary support (MUSE format)
+- [ ] Implement cross-lingual analogy evaluation
+- [ ] Target: >70% precision@1 on MUSE benchmark
+
+#### Phase 5: Production Features
+- [ ] Incremental vocabulary updates
+- [ ] Language detection + automatic routing
+- [ ] Quantized fingerprints for mobile/edge deployment
+- [ ] REST API for cross-lingual semantic search
+
+### Research Challenges
+
+Several open questions remain for large-scale cross-lingual deployment:
+
+1. **Topology Preservation**: Does the SOM's 2D topology transfer meaningfully across languages with different morphological structures?
+
+2. **Rare Word Handling**: Low-frequency words have noisy fingerprints; this is exacerbated in multilingual settings where corpus sizes vary by language.
+
+3. **Polysemy**: "bank" (river) vs "bank" (financial) - different meanings need different fingerprints, but translations may disambiguate differently.
+
+4. **Script Differences**: Aligning Latin, Cyrillic, Arabic, and CJK character systems requires careful tokenization strategies.
+
+5. **Morphological Complexity**: Agglutinative languages (Turkish, Finnish) vs isolating languages (English, Chinese) have vastly different word/morpheme ratios.
 
 ## Contributing
 
