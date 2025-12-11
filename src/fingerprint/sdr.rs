@@ -1,6 +1,6 @@
 //! Sparse Distributed Representation (SDR) implementation.
 
-use roaring::RoaringBitmap;
+use crate::roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::ops::{BitAnd, BitOr, BitXor};
 

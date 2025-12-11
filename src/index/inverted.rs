@@ -1,7 +1,7 @@
 //! Inverted index for efficient similarity search.
 
 use crate::fingerprint::{Sdr, WordFingerprint};
-use roaring::RoaringBitmap;
+use crate::roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

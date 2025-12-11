@@ -317,7 +317,7 @@ impl RetinaFormat {
             let fp_start = entry.fp_offset as usize;
             let fp_end = fp_start + entry.fp_len as usize;
             let bitmap =
-                roaring::RoaringBitmap::deserialize_unchecked_from(&fp_data[fp_start..fp_end])
+                crate::roaring::RoaringBitmap::deserialize_unchecked_from(&fp_data[fp_start..fp_end])
                     .map_err(|e| ProteusError::Serialization(e.to_string()))?;
 
             let sdr = Sdr::from_bitmap(bitmap, grid_size);
@@ -417,7 +417,7 @@ impl MmappedRetina {
         let fp_start = self.header.fingerprint_offset as usize + entry.fp_offset as usize;
         let fp_end = fp_start + entry.fp_len as usize;
 
-        let bitmap = roaring::RoaringBitmap::deserialize_unchecked_from(&self.mmap[fp_start..fp_end])
+        let bitmap = crate::roaring::RoaringBitmap::deserialize_unchecked_from(&self.mmap[fp_start..fp_end])
             .ok()?;
 
         let grid_size = self.header.dimension * self.header.dimension;

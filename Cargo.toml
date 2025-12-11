@@ -18,8 +18,9 @@ name = "proteus"
 path = "src/main.rs"
 
 [dependencies]
-# Compressed bitmap for SDR storage
-roaring = { version = "0.10", features = ["serde"] }
+# Vendored roaring bitmap dependencies
+bytemuck = "1.21"
+byteorder = "1.5"
 
 # Unicode-aware text processing
 unicode-segmentation = "1.10"
