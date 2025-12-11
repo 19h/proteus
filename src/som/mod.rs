@@ -2,6 +2,7 @@
 
 mod map;
 mod neuron;
+pub mod simd;
 pub mod training;
 
 pub use map::Som;

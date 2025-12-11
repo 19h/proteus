@@ -221,16 +221,24 @@ impl WordFingerprinter {
     }
 
     /// Finds the most similar words to a given word.
+    /// Filters out likely stopwords using heuristics.
     pub fn find_similar(&self, word: &str, k: usize) -> Result<Vec<(String, f64)>> {
         let target = self
             .fingerprints
             .get(word)
             .ok_or_else(|| ProteusError::WordNotFound(word.to_string()))?;
 
+        // Compute stopword scores for all words
+        let stopword_scores = self.compute_stopword_scores();
+
         let mut similarities: Vec<(String, f64)> = self
             .fingerprints
             .iter()
             .filter(|(w, _)| w.as_str() != word)
+            .filter(|(w, _)| {
+                // Filter out likely stopwords (score > 0.35)
+                stopword_scores.get(*w).copied().unwrap_or(0.0) < 0.35
+            })
             .map(|(w, wf)| {
                 let sim = target.fingerprint.cosine_similarity(&wf.fingerprint);
                 (w.clone(), sim)
@@ -241,6 +249,81 @@ impl WordFingerprinter {
         similarities.truncate(k);
 
         Ok(similarities)
+    }
+
+    /// Computes a stopword score for each word (0.0 = content word, 1.0 = likely stopword).
+    ///
+    /// Uses multiple heuristics:
+    /// - Short length (1-3 chars)
+    /// - High overlap with other words (generic fingerprint)
+    /// - High frequency (if tracked)
+    fn compute_stopword_scores(&self) -> HashMap<String, f64> {
+        let mut scores: HashMap<String, f64> = HashMap::new();
+
+        // First, compute average overlap for each word's fingerprint
+        // Stopwords tend to have fingerprints that overlap with many other words
+        let all_fingerprints: Vec<(&String, &WordFingerprint)> = self.fingerprints.iter().collect();
+
+        for (word, wf) in &all_fingerprints {
+            let mut score = 0.0;
+
+            // Heuristic 1: Short words are more likely to be stopwords
+            let len = word.len();
+            if len == 1 {
+                score += 0.5;
+            } else if len == 2 {
+                score += 0.4;
+            } else if len == 3 {
+                score += 0.25;
+            } else if len == 4 {
+                score += 0.1;
+            }
+
+            // Heuristic 2: Words with apostrophes are often stopwords (contractions)
+            if word.contains('\'') || word.contains('\u{2019}') {
+                score += 0.2;
+            }
+
+            // Heuristic 3: High frequency words (if frequency is tracked)
+            if wf.frequency > 0.01 {
+                score += 0.3;
+            } else if wf.frequency > 0.005 {
+                score += 0.2;
+            } else if wf.frequency > 0.001 {
+                score += 0.1;
+            }
+
+            // Heuristic 4: Words that overlap highly with many other words
+            // Sample a subset for efficiency
+            let sample_size = 100usize.min(all_fingerprints.len());
+            let mut overlap_count = 0usize;
+            let mut sampled = 0usize;
+            for (other_word, other_wf) in all_fingerprints.iter().take(sample_size) {
+                if *other_word != *word {
+                    let overlap = wf.fingerprint.overlap_count(&other_wf.fingerprint);
+                    let max_overlap = wf.cardinality().min(other_wf.cardinality()) as f64;
+                    if max_overlap > 0.0 && (overlap as f64 / max_overlap) > 0.3 {
+                        overlap_count += 1;
+                    }
+                    sampled += 1;
+                }
+            }
+            if sampled > 0 {
+                let overlap_ratio = overlap_count as f64 / sampled as f64;
+                if overlap_ratio > 0.5 {
+                    score += 0.3;
+                } else if overlap_ratio > 0.3 {
+                    score += 0.2;
+                } else if overlap_ratio > 0.15 {
+                    score += 0.1;
+                }
+            }
+
+            let final_score: f64 = score;
+            scores.insert((*word).clone(), final_score.min(1.0));
+        }
+
+        scores
     }
 
     /// Finds words similar to a given fingerprint.

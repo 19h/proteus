@@ -2,9 +2,20 @@
 //!
 //! This module provides efficient SOM training using compact word embeddings
 //! learned through a skip-gram-like approach during a single pass over the corpus.
+//!
+//! Performance optimizations:
+//! - f32 instead of f64 (2x SIMD throughput, half memory bandwidth)
+//! - Flat weight arrays for cache-friendly access
+//! - Pre-computed neighborhood weights
+//! - Parallel BMU search using rayon
+//! - SIMD-friendly loop unrolling
 
 use crate::config::SomConfig;
 use crate::error::{ProteusError, Result};
+use crate::som::simd::{
+    add_vectors_f32, distance_squared_f32, find_all_bmus_parallel, normalize_f32,
+    precompute_neighborhood, update_weights_f32,
+};
 use crate::som::Som;
 use log::info;
 use rand::seq::SliceRandom;
@@ -16,7 +27,7 @@ use std::collections::HashMap;
 /// Default embedding dimension for word vectors.
 pub const DEFAULT_EMBEDDING_DIM: usize = 100;
 
-/// Context for training samples.
+/// Context for training samples (f64 version for backwards compatibility).
 #[derive(Debug, Clone)]
 pub struct TrainingContext {
     /// The center word.
@@ -34,12 +45,12 @@ impl TrainingContext {
 
 /// Compact word embeddings learned from co-occurrence.
 ///
-/// Instead of vocabulary-sized BoW vectors, this uses a fixed-dimension
-/// embedding space where words are represented by their co-occurrence patterns
-/// projected into a low-dimensional space via random projection (a simple
-/// but effective dimensionality reduction technique).
+/// Uses f32 for SIMD efficiency. Instead of vocabulary-sized BoW vectors,
+/// this uses a fixed-dimension embedding space where words are represented
+/// by their co-occurrence patterns projected into a low-dimensional space
+/// via random projection.
 pub struct WordEmbeddings {
-    embeddings: HashMap<String, Vec<f64>>,
+    embeddings: HashMap<String, Vec<f32>>,
     dim: usize,
 }
 
@@ -67,47 +78,36 @@ impl WordEmbeddings {
             }
         }
 
-        // Generate random projection vectors for each word
+        // Generate random projection vectors for each word (f32)
         use rand::Rng;
-        let random_vecs: HashMap<String, Vec<f64>> = all_words
+        let random_vecs: HashMap<String, Vec<f32>> = all_words
             .iter()
             .map(|&w| {
-                let vec: Vec<f64> = (0..dim)
-                    .map(|_| rng.gen_range(-1.0..1.0))
-                    .collect();
+                let vec: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0f32)).collect();
                 (w.to_string(), vec)
             })
             .collect();
 
-        // Build embeddings by summing context vectors
-        let mut word_contexts: HashMap<String, Vec<f64>> = HashMap::new();
-        let mut word_counts: HashMap<String, usize> = HashMap::new();
+        // Build embeddings by summing context vectors using SIMD
+        let mut word_contexts: HashMap<String, Vec<f32>> = HashMap::new();
 
         for (center, ctx) in contexts {
             let entry = word_contexts
                 .entry(center.clone())
-                .or_insert_with(|| vec![0.0; dim]);
+                .or_insert_with(|| vec![0.0f32; dim]);
 
             for ctx_word in ctx {
                 if let Some(ctx_vec) = random_vecs.get(ctx_word) {
-                    for (i, v) in ctx_vec.iter().enumerate() {
-                        entry[i] += v;
-                    }
+                    add_vectors_f32(entry, ctx_vec);
                 }
             }
-            *word_counts.entry(center.clone()).or_insert(0) += 1;
         }
 
-        // Normalize embeddings
-        let embeddings: HashMap<String, Vec<f64>> = word_contexts
+        // Normalize embeddings using SIMD-friendly function
+        let embeddings: HashMap<String, Vec<f32>> = word_contexts
             .into_iter()
             .map(|(word, mut vec)| {
-                let norm: f64 = vec.iter().map(|x| x * x).sum::<f64>().sqrt();
-                if norm > 0.0 {
-                    for v in &mut vec {
-                        *v /= norm;
-                    }
-                }
+                normalize_f32(&mut vec);
                 (word, vec)
             })
             .collect();
@@ -116,7 +116,7 @@ impl WordEmbeddings {
     }
 
     /// Get embedding for a word.
-    pub fn get(&self, word: &str) -> Option<&Vec<f64>> {
+    pub fn get(&self, word: &str) -> Option<&Vec<f32>> {
         self.embeddings.get(word)
     }
 
@@ -171,10 +171,10 @@ impl SomTrainer {
         initial * (final_r / initial).powf(t)
     }
 
-    /// Fast training using batch processing with parallelism.
+    /// Ultra-fast training using f32 SIMD operations.
     ///
     /// Uses a two-phase approach:
-    /// 1. Quick coarse pass with large radius to establish topology
+    /// 1. Quick coarse pass with medium radius to establish topology
     /// 2. Fine-tuning pass with small radius for precise mapping
     pub fn train_fast(
         &mut self,
@@ -183,30 +183,25 @@ impl SomTrainer {
         contexts: &[(String, Vec<String>)],
     ) -> Result<HashMap<String, Vec<usize>>> {
         if contexts.is_empty() {
-            return Err(ProteusError::Training("No training contexts provided".to_string()));
+            return Err(ProteusError::Training(
+                "No training contexts provided".to_string(),
+            ));
         }
 
-        // Pre-compute all context embeddings
-        let context_vecs: Vec<(String, Vec<f64>)> = contexts
+        // Pre-compute all context embeddings as f32 using SIMD vector addition
+        let context_vecs: Vec<(String, Vec<f32>)> = contexts
             .par_iter()
             .filter_map(|(center, ctx)| {
-                let mut vec = vec![0.0; embeddings.dim()];
+                let mut vec = vec![0.0f32; embeddings.dim()];
                 let mut count = 0;
                 for w in ctx {
                     if let Some(e) = embeddings.get(w) {
-                        for (i, v) in e.iter().enumerate() {
-                            vec[i] += v;
-                        }
+                        add_vectors_f32(&mut vec, e);
                         count += 1;
                     }
                 }
                 if count > 0 {
-                    let norm: f64 = vec.iter().map(|x| x * x).sum::<f64>().sqrt();
-                    if norm > 0.0 {
-                        for v in &mut vec {
-                            *v /= norm;
-                        }
-                    }
+                    normalize_f32(&mut vec);
                     Some((center.clone(), vec))
                 } else {
                     None
@@ -215,158 +210,194 @@ impl SomTrainer {
             .collect();
 
         if context_vecs.is_empty() {
-            return Err(ProteusError::Training("No valid context vectors".to_string()));
+            return Err(ProteusError::Training(
+                "No valid context vectors".to_string(),
+            ));
         }
 
         let dim = som.dimension;
         let weight_dim = embeddings.dim();
         let num_neurons = som.neurons.len();
 
-        // Flatten neuron weights for cache-friendly access
-        let mut neuron_weights: Vec<f64> = Vec::with_capacity(num_neurons * weight_dim);
+        // Convert neuron weights to f32 flat array for SIMD operations
+        let mut neuron_weights: Vec<f32> = Vec::with_capacity(num_neurons * weight_dim);
         for neuron in &som.neurons {
-            neuron_weights.extend_from_slice(&neuron.weights);
+            for &w in &neuron.weights {
+                neuron_weights.push(w as f32);
+            }
         }
 
         info!(
-            "Training SOM: {} samples, {} neurons, {} dim",
-            context_vecs.len(), num_neurons, weight_dim
+            "Training SOM: {} samples, {} neurons, {} dim (f32 SIMD)",
+            context_vecs.len(),
+            num_neurons,
+            weight_dim
         );
 
-        // Sample subset for coarse training (10% or 10k, whichever is smaller)
-        let coarse_sample_size = (context_vecs.len() / 10).min(10000).max(1000);
+        // Sample subset for coarse training (10% or 20k, whichever is smaller)
+        let coarse_sample_size = (context_vecs.len() / 10).min(20000).max(2000);
         let mut indices: Vec<usize> = (0..context_vecs.len()).collect();
         indices.shuffle(&mut self.rng);
-        let coarse_indices = &indices[..coarse_sample_size];
+        let coarse_indices: Vec<usize> = indices[..coarse_sample_size].to_vec();
 
-        // Phase 1: Coarse topology (large radius, high learning rate)
-        info!("Phase 1: Coarse topology ({} samples, radius=16)", coarse_sample_size);
-        let coarse_lr = 0.1;
-        let coarse_radius = 16.0;
-        let radius_int = (coarse_radius * 1.5f64).ceil() as i32;
+        // Phase 1: Coarse topology (large radius for good organization)
+        let coarse_lr = 0.1f32;
+        let coarse_radius = 12.0f32;
 
-        for &idx in coarse_indices {
-            let (_, input) = &context_vecs[idx];
-            let bmu_idx = find_bmu_flat_seq(&neuron_weights, input, num_neurons, weight_dim);
+        // Pre-compute neighborhood weights for coarse phase (lower threshold = more neighbors)
+        let coarse_neighbors = precompute_neighborhood(coarse_radius, 0.02);
+        info!(
+            "Phase 1: Coarse topology ({} samples, {} neighbors)",
+            coarse_sample_size,
+            coarse_neighbors.len()
+        );
 
-            let bmu_row = bmu_idx / dim;
-            let bmu_col = bmu_idx % dim;
+        // Find all coarse BMUs in parallel first
+        let coarse_inputs: Vec<(usize, Vec<f32>)> = coarse_indices
+            .iter()
+            .map(|&i| (i, context_vecs[i].1.clone()))
+            .collect();
+        let coarse_bmus =
+            find_all_bmus_parallel(&neuron_weights, &coarse_inputs, num_neurons, weight_dim);
 
-            for dr in -radius_int..=radius_int {
-                for dc in -radius_int..=radius_int {
-                    let grid_dist_sq = (dr * dr + dc * dc) as f64;
-                    if grid_dist_sq > coarse_radius * coarse_radius * 4.0 { continue; }
+        // Apply coarse updates sequentially (needed for weight consistency)
+        for (sample_idx, bmu_idx) in coarse_bmus {
+            let input = &context_vecs[sample_idx].1;
+            let bmu_row = (bmu_idx / dim) as i32;
+            let bmu_col = (bmu_idx % dim) as i32;
+            let dim_i = dim as i32;
 
-                    let bmu_r = bmu_row as i32;
-                    let bmu_c = bmu_col as i32;
-                    let dim_i = dim as i32;
-                    let nr = if som.toroidal {
-                        ((bmu_r + dr).rem_euclid(dim_i)) as usize
-                    } else {
-                        let r = bmu_r + dr;
-                        if r < 0 || r >= dim_i { continue; }
-                        r as usize
-                    };
-                    let nc = if som.toroidal {
-                        ((bmu_c + dc).rem_euclid(dim_i)) as usize
-                    } else {
-                        let c = bmu_c + dc;
-                        if c < 0 || c >= dim_i { continue; }
-                        c as usize
-                    };
-
-                    let neuron_idx = nr * dim + nc;
-                    let sigma_sq = coarse_radius * coarse_radius;
-                    let neighborhood = (-grid_dist_sq / (2.0 * sigma_sq)).exp();
-
-                    if neighborhood > 0.01 {
-                        let influence = coarse_lr * neighborhood;
-                        let offset = neuron_idx * weight_dim;
-                        for i in 0..weight_dim {
-                            neuron_weights[offset + i] += influence * (input[i] - neuron_weights[offset + i]);
-                        }
+            for &(dr, dc, weight) in &coarse_neighbors {
+                let nr = if som.toroidal {
+                    (bmu_row + dr).rem_euclid(dim_i) as usize
+                } else {
+                    let r = bmu_row + dr;
+                    if r < 0 || r >= dim_i {
+                        continue;
                     }
-                }
+                    r as usize
+                };
+                let nc = if som.toroidal {
+                    (bmu_col + dc).rem_euclid(dim_i) as usize
+                } else {
+                    let c = bmu_col + dc;
+                    if c < 0 || c >= dim_i {
+                        continue;
+                    }
+                    c as usize
+                };
+
+                let neuron_idx = nr * dim + nc;
+                let influence = coarse_lr * weight;
+                let offset = neuron_idx * weight_dim;
+                update_weights_f32(
+                    &mut neuron_weights[offset..offset + weight_dim],
+                    input,
+                    influence,
+                );
             }
         }
 
-        // Phase 2: Fine mapping (all samples, small radius) - parallel BMU, collect results
-        info!("Phase 2: Fine mapping ({} samples, radius=2)", context_vecs.len());
-        let fine_lr = 0.02;
-        let fine_radius = 2.0;
-        let fine_radius_int = (fine_radius * 1.5f64).ceil() as i32;
+        // Phase 2: Fine-tuning with smaller subset (small radius updates)
+        let fine_sample_size = (context_vecs.len() / 5).min(50000).max(5000);
+        let fine_lr = 0.05f32;
+        let fine_radius = 4.0f32;
+        let fine_neighbors = precompute_neighborhood(fine_radius, 0.05);
 
-        // Find all BMUs in parallel
-        let bmus: Vec<(usize, usize)> = context_vecs
-            .par_iter()
+        // Sample for fine tuning
+        indices.shuffle(&mut self.rng);
+        let fine_indices: Vec<usize> = indices[..fine_sample_size].to_vec();
+
+        info!(
+            "Phase 2: Fine-tuning ({} samples, {} neighbors)",
+            fine_sample_size,
+            fine_neighbors.len()
+        );
+
+        // Find BMUs in parallel for fine samples
+        let fine_inputs: Vec<(usize, Vec<f32>)> = fine_indices
+            .iter()
+            .map(|&i| (i, context_vecs[i].1.clone()))
+            .collect();
+        let fine_bmus =
+            find_all_bmus_parallel(&neuron_weights, &fine_inputs, num_neurons, weight_dim);
+
+        // Apply fine updates
+        for (sample_idx, bmu_idx) in fine_bmus {
+            let input = &context_vecs[sample_idx].1;
+            let bmu_row = (bmu_idx / dim) as i32;
+            let bmu_col = (bmu_idx % dim) as i32;
+            let dim_i = dim as i32;
+
+            for &(dr, dc, weight) in &fine_neighbors {
+                let nr = if som.toroidal {
+                    (bmu_row + dr).rem_euclid(dim_i) as usize
+                } else {
+                    let r = bmu_row + dr;
+                    if r < 0 || r >= dim_i {
+                        continue;
+                    }
+                    r as usize
+                };
+                let nc = if som.toroidal {
+                    (bmu_col + dc).rem_euclid(dim_i) as usize
+                } else {
+                    let c = bmu_col + dc;
+                    if c < 0 || c >= dim_i {
+                        continue;
+                    }
+                    c as usize
+                };
+
+                let neuron_idx = nr * dim + nc;
+                let influence = fine_lr * weight;
+                let offset = neuron_idx * weight_dim;
+                update_weights_f32(
+                    &mut neuron_weights[offset..offset + weight_dim],
+                    input,
+                    influence,
+                );
+            }
+        }
+
+        // Phase 3: Final BMU assignment (all samples)
+        info!(
+            "Phase 3: Final BMU assignment ({} samples)",
+            context_vecs.len()
+        );
+
+        // Prepare indexed inputs for parallel BMU search
+        let indexed_inputs: Vec<(usize, Vec<f32>)> = context_vecs
+            .iter()
             .enumerate()
-            .map(|(sample_idx, (_, input))| {
-                let bmu = find_bmu_flat_seq(&neuron_weights, input, num_neurons, weight_dim);
-                (sample_idx, bmu)
-            })
+            .map(|(i, (_, v))| (i, v.clone()))
             .collect();
 
-        // Record BMUs
+        // Find all BMUs in parallel using SIMD
+        let bmus = find_all_bmus_parallel(&neuron_weights, &indexed_inputs, num_neurons, weight_dim);
+
+        // Record BMUs (this is what we return)
         let mut word_to_bmus: HashMap<String, Vec<usize>> = HashMap::new();
-        for (sample_idx, bmu_idx) in &bmus {
-            let (center, _) = &context_vecs[*sample_idx];
+        for &(sample_idx, bmu_idx) in &bmus {
+            let center = &context_vecs[sample_idx].0;
             word_to_bmus
                 .entry(center.clone())
                 .or_default()
-                .push(*bmu_idx);
+                .push(bmu_idx);
         }
 
-        // Apply fine updates (with small radius this is fast)
-        for (sample_idx, bmu_idx) in &bmus {
-            let (_, input) = &context_vecs[*sample_idx];
-            let bmu_row = bmu_idx / dim;
-            let bmu_col = bmu_idx % dim;
-
-            for dr in -fine_radius_int..=fine_radius_int {
-                for dc in -fine_radius_int..=fine_radius_int {
-                    let grid_dist_sq = (dr * dr + dc * dc) as f64;
-                    if grid_dist_sq > fine_radius * fine_radius * 4.0 { continue; }
-
-                    let bmu_r = bmu_row as i32;
-                    let bmu_c = bmu_col as i32;
-                    let dim_i = dim as i32;
-                    let nr = if som.toroidal {
-                        ((bmu_r + dr).rem_euclid(dim_i)) as usize
-                    } else {
-                        let r = bmu_r + dr;
-                        if r < 0 || r >= dim_i { continue; }
-                        r as usize
-                    };
-                    let nc = if som.toroidal {
-                        ((bmu_c + dc).rem_euclid(dim_i)) as usize
-                    } else {
-                        let c = bmu_c + dc;
-                        if c < 0 || c >= dim_i { continue; }
-                        c as usize
-                    };
-
-                    let neuron_idx = nr * dim + nc;
-                    let sigma_sq = fine_radius * fine_radius;
-                    let neighborhood = (-grid_dist_sq / (2.0 * sigma_sq)).exp();
-
-                    if neighborhood > 0.01 {
-                        let influence = fine_lr * neighborhood;
-                        let offset = neuron_idx * weight_dim;
-                        for i in 0..weight_dim {
-                            neuron_weights[offset + i] += influence * (input[i] - neuron_weights[offset + i]);
-                        }
-                    }
-                }
+        // Copy f32 weights back to neurons as f64
+        for (i, neuron) in som.neurons.iter_mut().enumerate() {
+            let offset = i * weight_dim;
+            for (j, w) in neuron.weights.iter_mut().enumerate() {
+                *w = neuron_weights[offset + j] as f64;
             }
         }
 
-        // Copy weights back to neurons
-        for (i, neuron) in som.neurons.iter_mut().enumerate() {
-            let offset = i * weight_dim;
-            neuron.weights.copy_from_slice(&neuron_weights[offset..offset + weight_dim]);
-        }
-
-        info!("Training completed. {} unique words mapped.", word_to_bmus.len());
+        info!(
+            "Training completed. {} unique words mapped.",
+            word_to_bmus.len()
+        );
         Ok(word_to_bmus)
     }
 
@@ -377,7 +408,9 @@ impl SomTrainer {
         contexts: &[TrainingContext],
     ) -> Result<HashMap<String, Vec<usize>>> {
         if contexts.is_empty() {
-            return Err(ProteusError::Training("No training contexts provided".to_string()));
+            return Err(ProteusError::Training(
+                "No training contexts provided".to_string(),
+            ));
         }
 
         let mut word_to_bmus: HashMap<String, Vec<usize>> = HashMap::new();
@@ -400,7 +433,8 @@ impl SomTrainer {
             let context = &contexts[idx];
 
             // Find BMU
-            let bmu_idx = som.neurons
+            let bmu_idx = som
+                .neurons
                 .iter()
                 .enumerate()
                 .min_by(|(_, a), (_, b)| {
@@ -430,14 +464,18 @@ impl SomTrainer {
                         ((bmu_row as i32 + dr).rem_euclid(dim as i32)) as usize
                     } else {
                         let r = bmu_row as i32 + dr;
-                        if r < 0 || r >= dim as i32 { continue; }
+                        if r < 0 || r >= dim as i32 {
+                            continue;
+                        }
                         r as usize
                     };
                     let nc = if som.toroidal {
                         ((bmu_col as i32 + dc).rem_euclid(dim as i32)) as usize
                     } else {
                         let c = bmu_col as i32 + dc;
-                        if c < 0 || c >= dim as i32 { continue; }
+                        if c < 0 || c >= dim as i32 {
+                            continue;
+                        }
                         c as usize
                     };
 
@@ -497,20 +535,15 @@ impl SomTrainer {
     }
 }
 
-/// Find BMU using flat weight array (cache-friendly, sequential).
-/// This is used inside parallel iterators where each thread finds BMU for its sample.
+/// Find BMU using SIMD-optimized distance calculation.
 #[inline]
-fn find_bmu_flat_seq(weights: &[f64], input: &[f64], num_neurons: usize, weight_dim: usize) -> usize {
+fn find_bmu_simd(weights: &[f32], input: &[f32], num_neurons: usize, weight_dim: usize) -> usize {
     let mut best_idx = 0;
-    let mut best_dist = f64::MAX;
+    let mut best_dist = f32::MAX;
 
     for i in 0..num_neurons {
         let offset = i * weight_dim;
-        let mut dist = 0.0;
-        for j in 0..weight_dim {
-            let diff = input[j] - weights[offset + j];
-            dist += diff * diff;
-        }
+        let dist = distance_squared_f32(&weights[offset..offset + weight_dim], input);
         if dist < best_dist {
             best_dist = dist;
             best_idx = i;
@@ -596,8 +629,14 @@ mod tests {
     #[test]
     fn test_word_embeddings() {
         let contexts = vec![
-            ("hello".to_string(), vec!["world".to_string(), "there".to_string()]),
-            ("world".to_string(), vec!["hello".to_string(), "peace".to_string()]),
+            (
+                "hello".to_string(),
+                vec!["world".to_string(), "there".to_string()],
+            ),
+            (
+                "world".to_string(),
+                vec!["hello".to_string(), "peace".to_string()],
+            ),
         ];
 
         let embeddings = WordEmbeddings::from_contexts(&contexts, 50, Some(42));
