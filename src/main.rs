@@ -5,6 +5,7 @@
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle, HumanDuration};
 use log::error;
+use rayon::prelude::*;
 use proteus::{
     FingerprintConfig, Retina, Result, Som, SomConfig, SomTrainer, Tokenizer,
     WordFingerprinter,
@@ -184,32 +185,29 @@ fn train_retina(
     pb.finish_and_clear();
     println!("✓ Loaded {} documents", format_number(documents.len()));
 
-    // Step 2: Extract context windows
+    // Step 2: Extract context windows (parallel)
     let pb = ProgressBar::new(documents.len() as u64);
     pb.set_style(bar_style.clone());
-    pb.set_message("Extracting context windows...");
+    pb.set_message("Extracting context windows (parallel)...");
 
     let tokenizer = Tokenizer::default_config();
-    let mut contexts: Vec<(String, Vec<String>)> = Vec::new();
+    let contexts: Vec<(String, Vec<String>)> = documents
+        .par_iter()
+        .flat_map(|doc| {
+            pb.inc(1);
+            tokenizer.context_windows_as_strings(doc, 2)
+        })
+        .collect();
 
-    for (i, doc) in documents.iter().enumerate() {
-        for (center, context) in tokenizer.context_windows_as_strings(doc, 2) {
-            contexts.push((center, context));
-        }
-        if i % 10000 == 0 {
-            pb.set_position(i as u64);
-        }
-    }
     pb.finish_and_clear();
     println!("✓ Extracted {} context windows", format_number(contexts.len()));
 
     // Step 3: Learn embeddings
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(spinner_style.clone());
+    let pb = ProgressBar::new(0);
+    pb.set_style(bar_style.clone());
     pb.set_message(format!("Learning word embeddings ({} dimensions)...", DEFAULT_EMBEDDING_DIM));
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
-    let embeddings = WordEmbeddings::from_contexts(&contexts, DEFAULT_EMBEDDING_DIM, seed);
+    let embeddings = WordEmbeddings::from_contexts_with_progress(&contexts, DEFAULT_EMBEDDING_DIM, seed, Some(&pb));
 
     pb.finish_and_clear();
     println!("✓ Learned embeddings for {} words", format_number(embeddings.len()));

@@ -4,8 +4,10 @@ use crate::config::FingerprintConfig;
 use crate::error::{ProteusError, Result};
 use crate::fingerprint::Sdr;
 use indicatif::ProgressBar;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A word fingerprint with metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,43 +98,58 @@ impl WordFingerprinter {
         let total_hits: usize = word_to_bmus.values().map(|bmus| bmus.len()).sum();
         let total_hits_f64 = total_hits as f64;
 
-        for (i, (word, bmus)) in word_to_bmus.iter().enumerate() {
-            // Count frequency of each position
-            let mut position_counts: HashMap<usize, usize> = HashMap::new();
-            for &bmu in bmus {
-                *position_counts.entry(bmu).or_insert(0) += 1;
-            }
+        let target_bits = self.config.max_active_bits;
+        let grid_size = self.grid_size;
 
-            // Sort by count and take top positions
-            let mut sorted: Vec<(usize, usize)> = position_counts.into_iter().collect();
-            sorted.sort_by(|a, b| b.1.cmp(&a.1));
-
-            let target_bits = self.config.max_active_bits;
-            let positions: Vec<u32> = sorted
-                .into_iter()
-                .take(target_bits)
-                .map(|(pos, _)| pos as u32)
-                .collect();
-
-            // Compute word frequency (normalized by total hits)
-            let word_frequency = bmus.len() as f64 / total_hits_f64;
-
-            let fingerprint = WordFingerprint::with_frequency(
-                word.clone(),
-                &positions,
-                self.grid_size,
-                word_frequency,
-            );
-
-            self.fingerprints.insert(word.clone(), fingerprint);
-
-            // Update progress bar
-            if let Some(pb) = progress {
-                if i % 1000 == 0 {
-                    pb.set_position(i as u64);
-                }
-            }
+        // Update progress message
+        if let Some(pb) = progress {
+            pb.set_message("Generating fingerprints (parallel)...");
         }
+
+        // Process fingerprints in parallel
+        let progress_counter = AtomicUsize::new(0);
+        let fingerprints: HashMap<String, WordFingerprint> = word_to_bmus
+            .par_iter()
+            .map(|(word, bmus)| {
+                // Count frequency of each position
+                let mut position_counts: HashMap<usize, usize> = HashMap::new();
+                for &bmu in bmus {
+                    *position_counts.entry(bmu).or_insert(0) += 1;
+                }
+
+                // Sort by count and take top positions
+                let mut sorted: Vec<(usize, usize)> = position_counts.into_iter().collect();
+                sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+                let positions: Vec<u32> = sorted
+                    .into_iter()
+                    .take(target_bits)
+                    .map(|(pos, _)| pos as u32)
+                    .collect();
+
+                // Compute word frequency (normalized by total hits)
+                let word_frequency = bmus.len() as f64 / total_hits_f64;
+
+                let fingerprint = WordFingerprint::with_frequency(
+                    word.clone(),
+                    &positions,
+                    grid_size,
+                    word_frequency,
+                );
+
+                // Update progress
+                let count = progress_counter.fetch_add(1, Ordering::Relaxed);
+                if let Some(pb) = progress {
+                    if count % 10_000 == 0 {
+                        pb.set_position(count as u64);
+                    }
+                }
+
+                (word.clone(), fingerprint)
+            })
+            .collect();
+
+        self.fingerprints = fingerprints;
 
         if let Some(pb) = progress {
             pb.set_position(word_to_bmus.len() as u64);

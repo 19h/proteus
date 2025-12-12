@@ -78,53 +78,162 @@ impl WordEmbeddings {
         dim: usize,
         seed: Option<u64>,
     ) -> Self {
+        Self::from_contexts_with_progress(contexts, dim, seed, None)
+    }
+
+    /// Learn word embeddings from context windows with progress display.
+    ///
+    /// Uses random projection: each unique context word contributes a fixed
+    /// random vector, and a word's embedding is the sum of its context vectors.
+    pub fn from_contexts_with_progress(
+        contexts: &[(String, Vec<String>)],
+        dim: usize,
+        seed: Option<u64>,
+        progress: Option<&ProgressBar>,
+    ) -> Self {
         let mut rng = match seed {
             Some(s) => ChaCha8Rng::seed_from_u64(s),
             None => ChaCha8Rng::from_entropy(),
         };
 
-        // Collect all unique words
-        let mut all_words: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for (center, ctx) in contexts {
-            all_words.insert(center);
-            for w in ctx {
-                all_words.insert(w);
-            }
+        // Update progress for phase 1: collecting vocabulary (parallel)
+        if let Some(pb) = progress {
+            pb.set_length(contexts.len() as u64);
+            pb.set_position(0);
+            pb.set_message("Collecting vocabulary (parallel)...");
+        }
+
+        // Collect all unique words in parallel using fold + reduce
+        let progress_counter = std::sync::atomic::AtomicUsize::new(0);
+        let all_words: std::collections::HashSet<&str> = contexts
+            .par_iter()
+            .fold(
+                || std::collections::HashSet::new(),
+                |mut set, (center, ctx)| {
+                    set.insert(center.as_str());
+                    for w in ctx {
+                        set.insert(w.as_str());
+                    }
+                    // Update progress periodically
+                    let count = progress_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if let Some(pb) = progress {
+                        if count % 500_000 == 0 {
+                            pb.set_position(count as u64);
+                        }
+                    }
+                    set
+                },
+            )
+            .reduce(
+                || std::collections::HashSet::new(),
+                |mut a, b| {
+                    a.extend(b);
+                    a
+                },
+            );
+
+        if let Some(pb) = progress {
+            pb.set_position(contexts.len() as u64);
+        }
+
+        // Update progress for phase 2
+        if let Some(pb) = progress {
+            pb.set_length(all_words.len() as u64);
+            pb.set_position(0);
+            pb.set_message(format!("Generating random projections for {} words...", format_number(all_words.len())));
         }
 
         // Generate random projection vectors for each word (f32)
         use rand::Rng;
         let random_vecs: HashMap<String, Vec<f32>> = all_words
             .iter()
-            .map(|&w| {
+            .enumerate()
+            .map(|(i, &w)| {
+                if let Some(pb) = progress {
+                    if i % 5000 == 0 {
+                        pb.set_position(i as u64);
+                    }
+                }
                 let vec: Vec<f32> = (0..dim).map(|_| rng.gen_range(-1.0f32..1.0f32)).collect();
                 (w.to_string(), vec)
             })
             .collect();
 
-        // Build embeddings by summing context vectors using SIMD
-        let mut word_contexts: HashMap<String, Vec<f32>> = HashMap::new();
-
-        for (center, ctx) in contexts {
-            let entry = word_contexts
-                .entry(center.clone())
-                .or_insert_with(|| vec![0.0f32; dim]);
-
-            for ctx_word in ctx {
-                if let Some(ctx_vec) = random_vecs.get(ctx_word) {
-                    add_vectors_f32(entry, ctx_vec);
-                }
-            }
+        // Update progress for phase 3
+        if let Some(pb) = progress {
+            pb.set_length(contexts.len() as u64);
+            pb.set_position(0);
+            pb.set_message("Building word embeddings (parallel)...");
         }
 
-        // Normalize embeddings using SIMD-friendly function
+        // Build embeddings by summing context vectors in parallel
+        // Use fold+reduce pattern: each thread builds local HashMap, then merge
+        let progress_counter2 = std::sync::atomic::AtomicUsize::new(0);
+        let word_contexts: HashMap<String, Vec<f32>> = contexts
+            .par_iter()
+            .fold(
+                || HashMap::new(),
+                |mut local_map: HashMap<String, Vec<f32>>, (center, ctx)| {
+                    let entry = local_map
+                        .entry(center.clone())
+                        .or_insert_with(|| vec![0.0f32; dim]);
+
+                    for ctx_word in ctx {
+                        if let Some(ctx_vec) = random_vecs.get(ctx_word) {
+                            add_vectors_f32(entry, ctx_vec);
+                        }
+                    }
+
+                    let count = progress_counter2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if let Some(pb) = progress {
+                        if count % 500_000 == 0 {
+                            pb.set_position(count as u64);
+                        }
+                    }
+                    local_map
+                },
+            )
+            .reduce(
+                || HashMap::new(),
+                |mut a, b| {
+                    for (word, vec) in b {
+                        let entry = a.entry(word).or_insert_with(|| vec![0.0f32; dim]);
+                        add_vectors_f32(entry, &vec);
+                    }
+                    a
+                },
+            );
+
+        if let Some(pb) = progress {
+            pb.set_position(contexts.len() as u64);
+        }
+
+        // Update progress for phase 4
+        if let Some(pb) = progress {
+            pb.set_length(word_contexts.len() as u64);
+            pb.set_position(0);
+            pb.set_message("Normalizing embeddings (parallel)...");
+        }
+
+        // Normalize embeddings in parallel
+        let progress_counter3 = std::sync::atomic::AtomicUsize::new(0);
         let embeddings: HashMap<String, Vec<f32>> = word_contexts
-            .into_iter()
+            .into_par_iter()
             .map(|(word, mut vec)| {
+                let count = progress_counter3.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Some(pb) = progress {
+                    if count % 50_000 == 0 {
+                        pb.set_position(count as u64);
+                    }
+                }
                 normalize_f32(&mut vec);
                 (word, vec)
             })
             .collect();
+
+        if let Some(pb) = progress {
+            pb.set_position(embeddings.len() as u64);
+        }
 
         Self { embeddings, dim }
     }
@@ -418,6 +527,7 @@ impl SomTrainer {
     /// Ultra-fast training with progress display.
     ///
     /// Same as `train_fast` but shows progress bars for each phase.
+    /// Uses streaming/chunked processing to handle massive datasets without OOM.
     pub fn train_fast_with_progress<F>(
         &mut self,
         som: &mut Som,
@@ -448,40 +558,23 @@ impl SomTrainer {
             println!("  ✓ {}", msg);
         };
 
-        // Pre-compute all context embeddings with progress
-        let pb = ProgressBar::new(contexts.len() as u64);
-        pb.set_style(bar_style.clone());
-        pb.set_message("Computing context embeddings...");
-
-        let context_vecs: Vec<(String, Vec<f32>)> = contexts
-            .par_iter()
-            .filter_map(|(center, ctx)| {
-                let mut vec = vec![0.0f32; embeddings.dim()];
-                let mut count = 0;
-                for w in ctx {
-                    if let Some(e) = embeddings.get(w) {
-                        add_vectors_f32(&mut vec, e);
-                        count += 1;
-                    }
+        // Helper to compute context embedding on-demand
+        let compute_context_embedding = |center: &str, ctx: &[String], emb: &WordEmbeddings| -> Option<(String, Vec<f32>)> {
+            let mut vec = vec![0.0f32; emb.dim()];
+            let mut count = 0;
+            for w in ctx {
+                if let Some(e) = emb.get(w) {
+                    add_vectors_f32(&mut vec, e);
+                    count += 1;
                 }
-                if count > 0 {
-                    normalize_f32(&mut vec);
-                    Some((center.clone(), vec))
-                } else {
-                    None
-                }
-            })
-            .inspect(|_| pb.inc(1))
-            .collect();
-
-        pb.finish_and_clear();
-        print_done(&format!("Computed {} context embeddings", format_number(context_vecs.len())));
-
-        if context_vecs.is_empty() {
-            return Err(ProteusError::Training(
-                "No valid context vectors".to_string(),
-            ));
-        }
+            }
+            if count > 0 {
+                normalize_f32(&mut vec);
+                Some((center.to_string(), vec))
+            } else {
+                None
+            }
+        };
 
         let dim = som.dimension;
         let weight_dim = embeddings.dim();
@@ -500,76 +593,56 @@ impl SomTrainer {
         let mut gpu = crate::accel::GpuAccelerator::new().ok();
 
         #[cfg(not(feature = "gpu"))]
-        let gpu: Option<()> = None;
+        let _gpu: Option<()> = None;
 
-        // Helper function to find BMUs using GPU (with caching) or CPU
-        #[cfg(feature = "gpu")]
-        fn find_bmus_with_gpu(
-            gpu_accel: &mut crate::accel::GpuAccelerator,
-            weights: &[f32],
-            inputs: &[(usize, Vec<f32>)],
-            n_neurons: usize,
-            w_dim: usize,
-        ) -> Vec<(usize, usize)> {
-            // Cache weights on GPU
-            if gpu_accel.cache_weights(weights, n_neurons, w_dim).is_err() {
-                return find_all_bmus_parallel(weights, inputs, n_neurons, w_dim);
-            }
-
-            // Flatten inputs
-            let batch_size = inputs.len();
-            let mut flat_inputs = Vec::with_capacity(batch_size * w_dim);
-            for (_, v) in inputs {
-                flat_inputs.extend_from_slice(v);
-            }
-
-            // Try GPU with cached weights
-            let result = match gpu_accel.find_bmus_cached(&flat_inputs, batch_size) {
-                Ok(bmu_indices) => inputs
-                    .iter()
-                    .zip(bmu_indices)
-                    .map(|((idx, _), bmu)| (*idx, bmu))
-                    .collect(),
-                Err(_) => find_all_bmus_parallel(weights, inputs, n_neurons, w_dim),
-            };
-
-            gpu_accel.clear_cached_weights();
-            result
-        }
-
-        // Phase 1: Coarse topology
-        let coarse_sample_size = (context_vecs.len() / 10).min(20000).max(2000);
+        // Phase 1: Coarse topology - compute embeddings on-demand for sampled indices
+        let coarse_sample_size = (contexts.len() / 10).min(20000).max(2000);
         let coarse_lr = 0.1f32;
         let coarse_radius = 12.0f32;
         let coarse_neighbors = precompute_neighborhood(coarse_radius, 0.02);
 
-        let mut indices: Vec<usize> = (0..context_vecs.len()).collect();
+        let mut indices: Vec<usize> = (0..contexts.len()).collect();
         indices.shuffle(&mut self.rng);
         let coarse_indices: Vec<usize> = indices[..coarse_sample_size].to_vec();
 
+        // Compute embeddings on-demand for coarse samples only
         let pb = ProgressBar::new(coarse_sample_size as u64);
+        pb.set_style(bar_style.clone());
+        pb.set_message(format!("Phase 1: Computing {} coarse samples...", format_number(coarse_sample_size)));
+
+        let coarse_samples: Vec<(usize, String, Vec<f32>)> = coarse_indices
+            .iter()
+            .filter_map(|&i| {
+                let (center, ctx) = &contexts[i];
+                compute_context_embedding(center, ctx, embeddings)
+                    .map(|(c, v)| (i, c, v))
+            })
+            .inspect(|_| pb.inc(1))
+            .collect();
+
+        pb.finish_and_clear();
+
+        // Find BMUs for coarse samples
+        let coarse_inputs: Vec<(usize, Vec<f32>)> = coarse_samples
+            .iter()
+            .map(|(i, _, v)| (*i, v.clone()))
+            .collect();
+
+        let coarse_bmus = find_all_bmus_parallel(&neuron_weights, &coarse_inputs, num_neurons, weight_dim);
+
+        // Build lookup from index to embedding for weight updates
+        let coarse_lookup: HashMap<usize, &Vec<f32>> = coarse_samples
+            .iter()
+            .map(|(i, _, v)| (*i, v))
+            .collect();
+
+        // Apply coarse updates
+        let pb = ProgressBar::new(coarse_bmus.len() as u64);
         pb.set_style(bar_style.clone());
         pb.set_message(format!("Phase 1: Coarse topology ({} neighbors)", coarse_neighbors.len()));
 
-        // Find all coarse BMUs (GPU or CPU)
-        let coarse_inputs: Vec<(usize, Vec<f32>)> = coarse_indices
-            .iter()
-            .map(|&i| (i, context_vecs[i].1.clone()))
-            .collect();
-
-        #[cfg(feature = "gpu")]
-        let coarse_bmus = if let Some(ref mut gpu_accel) = gpu {
-            find_bmus_with_gpu(gpu_accel, &neuron_weights, &coarse_inputs, num_neurons, weight_dim)
-        } else {
-            find_all_bmus_parallel(&neuron_weights, &coarse_inputs, num_neurons, weight_dim)
-        };
-
-        #[cfg(not(feature = "gpu"))]
-        let coarse_bmus = find_all_bmus_parallel(&neuron_weights, &coarse_inputs, num_neurons, weight_dim);
-
-        // Apply coarse updates sequentially (order matters for SOM convergence)
         for (i, (sample_idx, bmu_idx)) in coarse_bmus.iter().enumerate() {
-            let input = &context_vecs[*sample_idx].1;
+            let input = coarse_lookup.get(sample_idx).unwrap();
             let bmu_row = (*bmu_idx / dim) as i32;
             let bmu_col = (*bmu_idx % dim) as i32;
             let dim_i = dim as i32;
@@ -610,10 +683,11 @@ impl SomTrainer {
         }
 
         pb.finish_and_clear();
-        print_done(&format!("Phase 1: Coarse topology ({} samples)", coarse_sample_size));
+        print_done(&format!("Phase 1: Coarse topology ({} samples)", coarse_samples.len()));
+        drop(coarse_samples); // Free memory
 
-        // Phase 2: Fine-tuning
-        let fine_sample_size = (context_vecs.len() / 5).min(50000).max(5000);
+        // Phase 2: Fine-tuning - compute embeddings on-demand
+        let fine_sample_size = (contexts.len() / 5).min(50000).max(5000);
         let fine_lr = 0.05f32;
         let fine_radius = 4.0f32;
         let fine_neighbors = precompute_neighborhood(fine_radius, 0.05);
@@ -623,26 +697,41 @@ impl SomTrainer {
 
         let pb = ProgressBar::new(fine_sample_size as u64);
         pb.set_style(bar_style.clone());
-        pb.set_message(format!("Phase 2: Fine-tuning ({} neighbors)", fine_neighbors.len()));
+        pb.set_message(format!("Phase 2: Computing {} fine samples...", format_number(fine_sample_size)));
 
-        let fine_inputs: Vec<(usize, Vec<f32>)> = fine_indices
+        let fine_samples: Vec<(usize, String, Vec<f32>)> = fine_indices
             .iter()
-            .map(|&i| (i, context_vecs[i].1.clone()))
+            .filter_map(|&i| {
+                let (center, ctx) = &contexts[i];
+                compute_context_embedding(center, ctx, embeddings)
+                    .map(|(c, v)| (i, c, v))
+            })
+            .inspect(|_| pb.inc(1))
             .collect();
 
-        #[cfg(feature = "gpu")]
-        let fine_bmus = if let Some(ref mut gpu_accel) = gpu {
-            find_bmus_with_gpu(gpu_accel, &neuron_weights, &fine_inputs, num_neurons, weight_dim)
-        } else {
-            find_all_bmus_parallel(&neuron_weights, &fine_inputs, num_neurons, weight_dim)
-        };
+        pb.finish_and_clear();
 
-        #[cfg(not(feature = "gpu"))]
+        // Find BMUs for fine samples
+        let fine_inputs: Vec<(usize, Vec<f32>)> = fine_samples
+            .iter()
+            .map(|(i, _, v)| (*i, v.clone()))
+            .collect();
+
         let fine_bmus = find_all_bmus_parallel(&neuron_weights, &fine_inputs, num_neurons, weight_dim);
 
-        // Apply fine updates sequentially (order matters for SOM convergence)
+        // Build lookup for weight updates
+        let fine_lookup: HashMap<usize, &Vec<f32>> = fine_samples
+            .iter()
+            .map(|(i, _, v)| (*i, v))
+            .collect();
+
+        // Apply fine updates
+        let pb = ProgressBar::new(fine_bmus.len() as u64);
+        pb.set_style(bar_style.clone());
+        pb.set_message(format!("Phase 2: Fine-tuning ({} neighbors)", fine_neighbors.len()));
+
         for (i, (sample_idx, bmu_idx)) in fine_bmus.iter().enumerate() {
-            let input = &context_vecs[*sample_idx].1;
+            let input = fine_lookup.get(sample_idx).unwrap();
             let bmu_row = (*bmu_idx / dim) as i32;
             let bmu_col = (*bmu_idx % dim) as i32;
             let dim_i = dim as i32;
@@ -683,97 +772,135 @@ impl SomTrainer {
         }
 
         pb.finish_and_clear();
-        print_done(&format!("Phase 2: Fine-tuning ({} samples)", fine_sample_size));
+        print_done(&format!("Phase 2: Fine-tuning ({} samples)", fine_samples.len()));
+        drop(fine_samples); // Free memory
 
-        // Phase 3: Final BMU assignment - use GPU if available, otherwise CPU
-        let pb = ProgressBar::new(context_vecs.len() as u64);
+        // Phase 3: Final BMU assignment - STREAMING through contexts
+        // Never materialize all embeddings at once
+        let pb = ProgressBar::new(contexts.len() as u64);
         pb.set_style(bar_style);
 
         let mut word_to_bmus: HashMap<String, Vec<usize>> = HashMap::new();
+        let chunk_size = 50_000usize; // Process 50k at a time
+
+        #[cfg(feature = "gpu")]
+        let use_gpu = gpu.is_some();
+        #[cfg(not(feature = "gpu"))]
+        let use_gpu = false;
 
         #[cfg(feature = "gpu")]
         if let Some(ref mut gpu_accel) = gpu {
-            // Get optimal batch size based on GPU's buffer limits
-            // Vulkan has 2GB limit, Metal can go much higher
-            let chunk_size = gpu_accel.recommended_batch_size(num_neurons);
+            let gpu_batch_size = gpu_accel.recommended_batch_size(num_neurons);
             let max_binding_gb = gpu_accel.max_buffer_binding_size() as f64 / (1024.0 * 1024.0 * 1024.0);
             info!(
                 "GPU max buffer binding: {:.1} GB, using batch size {}",
-                max_binding_gb, chunk_size
+                max_binding_gb, gpu_batch_size
             );
 
-            // Cache weights on GPU (upload once, use for all batches)
             if let Err(e) = gpu_accel.cache_weights(&neuron_weights, num_neurons, weight_dim) {
                 info!("Failed to cache weights on GPU: {}, falling back to CPU", e);
             } else {
                 pb.set_message(format!(
-                    "Phase 3: GPU BMU assignment ({} samples, batch {})",
-                    format_number(context_vecs.len()),
-                    format_number(chunk_size)
+                    "Phase 3: GPU BMU assignment ({} contexts, streaming)",
+                    format_number(contexts.len())
                 ));
 
-                for chunk_start in (0..context_vecs.len()).step_by(chunk_size) {
-                    let chunk_end = (chunk_start + chunk_size).min(context_vecs.len());
-                    let chunk_len = chunk_end - chunk_start;
+                for chunk_start in (0..contexts.len()).step_by(chunk_size) {
+                    let chunk_end = (chunk_start + chunk_size).min(contexts.len());
 
-                    // Flatten inputs for GPU
-                    let mut flat_inputs = Vec::with_capacity(chunk_len * weight_dim);
-                    for (_, v) in &context_vecs[chunk_start..chunk_end] {
-                        flat_inputs.extend_from_slice(v);
+                    // Compute embeddings for this chunk on-the-fly
+                    let chunk_data: Vec<(String, Vec<f32>)> = contexts[chunk_start..chunk_end]
+                        .iter()
+                        .filter_map(|(center, ctx)| compute_context_embedding(center, ctx, embeddings))
+                        .collect();
+
+                    if chunk_data.is_empty() {
+                        pb.set_position(chunk_end as u64);
+                        continue;
                     }
 
-                    // Find BMUs using cached weights (fastest path)
-                    match gpu_accel.find_bmus_cached(&flat_inputs, chunk_len) {
-                        Ok(bmu_indices) => {
-                            // Record BMUs
-                            for (i, bmu_idx) in bmu_indices.into_iter().enumerate() {
-                                let center = &context_vecs[chunk_start + i].0;
-                                word_to_bmus
-                                    .entry(center.clone())
-                                    .or_default()
-                                    .push(bmu_idx);
-                            }
+                    // Process in GPU-sized batches
+                    for batch_start in (0..chunk_data.len()).step_by(gpu_batch_size) {
+                        let batch_end = (batch_start + gpu_batch_size).min(chunk_data.len());
+                        let batch_len = batch_end - batch_start;
+
+                        let mut flat_inputs = Vec::with_capacity(batch_len * weight_dim);
+                        for (_, v) in &chunk_data[batch_start..batch_end] {
+                            flat_inputs.extend_from_slice(v);
                         }
-                        Err(e) => {
-                            // GPU failed, will fall back to CPU below
-                            info!("GPU BMU search failed: {}, falling back to CPU", e);
-                            break;
+
+                        match gpu_accel.find_bmus_cached(&flat_inputs, batch_len) {
+                            Ok(bmu_indices) => {
+                                for (i, bmu_idx) in bmu_indices.into_iter().enumerate() {
+                                    let center = &chunk_data[batch_start + i].0;
+                                    word_to_bmus
+                                        .entry(center.clone())
+                                        .or_default()
+                                        .push(bmu_idx);
+                                }
+                            }
+                            Err(e) => {
+                                info!("GPU BMU search failed: {}, falling back to CPU for this batch", e);
+                                // Fall back to CPU for this batch
+                                let batch_inputs: Vec<(usize, Vec<f32>)> = chunk_data[batch_start..batch_end]
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, (_, v))| (i, v.clone()))
+                                    .collect();
+                                let cpu_bmus = find_all_bmus_parallel(&neuron_weights, &batch_inputs, num_neurons, weight_dim);
+                                for (i, bmu_idx) in cpu_bmus {
+                                    let center = &chunk_data[batch_start + i].0;
+                                    word_to_bmus
+                                        .entry(center.clone())
+                                        .or_default()
+                                        .push(bmu_idx);
+                                }
+                            }
                         }
                     }
 
                     pb.set_position(chunk_end as u64);
                 }
 
-                // Clear cached weights
                 gpu_accel.clear_cached_weights();
             }
         }
 
-        // Fall back to CPU if GPU not available or failed
-        if word_to_bmus.is_empty() || gpu.is_none() {
+        // CPU fallback or primary path
+        if !use_gpu || word_to_bmus.is_empty() {
             word_to_bmus.clear();
             pb.set_position(0);
-            pb.set_message(format!("Phase 3: CPU BMU assignment ({} samples)", format_number(context_vecs.len())));
+            pb.set_message(format!(
+                "Phase 3: CPU BMU assignment ({} contexts, streaming)",
+                format_number(contexts.len())
+            ));
 
-            // Process in chunks to show progress during parallel computation
-            let chunk_size = 10_000usize;
+            for chunk_start in (0..contexts.len()).step_by(chunk_size) {
+                let chunk_end = (chunk_start + chunk_size).min(contexts.len());
 
-            for chunk_start in (0..context_vecs.len()).step_by(chunk_size) {
-                let chunk_end = (chunk_start + chunk_size).min(context_vecs.len());
-
-                // Prepare chunk inputs
-                let chunk_inputs: Vec<(usize, Vec<f32>)> = context_vecs[chunk_start..chunk_end]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (_, v))| (chunk_start + i, v.clone()))
+                // Compute embeddings for this chunk on-the-fly
+                let chunk_data: Vec<(String, Vec<f32>)> = contexts[chunk_start..chunk_end]
+                    .par_iter()
+                    .filter_map(|(center, ctx)| compute_context_embedding(center, ctx, embeddings))
                     .collect();
 
-                // Find BMUs for this chunk in parallel (exact search for accurate fingerprints)
+                if chunk_data.is_empty() {
+                    pb.set_position(chunk_end as u64);
+                    continue;
+                }
+
+                // Prepare inputs for parallel BMU search
+                let chunk_inputs: Vec<(usize, Vec<f32>)> = chunk_data
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, v))| (i, v.clone()))
+                    .collect();
+
                 let chunk_bmus = find_all_bmus_parallel(&neuron_weights, &chunk_inputs, num_neurons, weight_dim);
 
                 // Record BMUs
-                for (sample_idx, bmu_idx) in chunk_bmus {
-                    let center = &context_vecs[sample_idx].0;
+                for (i, bmu_idx) in chunk_bmus {
+                    let center = &chunk_data[i].0;
                     word_to_bmus
                         .entry(center.clone())
                         .or_default()
