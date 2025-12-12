@@ -105,6 +105,11 @@ impl Retina {
         self.dimension * self.dimension
     }
 
+    /// Returns the fingerprint configuration.
+    pub fn config(&self) -> &FingerprintConfig {
+        &self.config
+    }
+
     /// Returns the number of words.
     pub fn vocabulary_size(&self) -> usize {
         self.word_fingerprinter.len()

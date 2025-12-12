@@ -76,3 +76,9 @@ impl From<bincode::Error> for ProteusError {
         ProteusError::Serialization(err.to_string())
     }
 }
+
+impl From<crate::wtpsplit::error::Error> for ProteusError {
+    fn from(err: crate::wtpsplit::error::Error) -> Self {
+        ProteusError::TextProcessing(err.to_string())
+    }
+}

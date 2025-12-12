@@ -81,6 +81,7 @@ pub mod error;
 pub mod fingerprint;
 pub mod index;
 pub mod roaring;
+pub mod segmentation;
 pub mod similarity;
 pub mod som;
 pub mod storage;
@@ -96,6 +97,7 @@ pub use similarity::{CosineSimilarity, JaccardSimilarity, OverlapSimilarity, Sim
 pub use som::{Neuron, Som, SomTrainer, TrainingContext};
 pub use storage::{Retina, RetinaFormat, RetinaHeader};
 pub use text::{Normalizer, SentenceSegmenter, Token, Tokenizer};
+pub use segmentation::{SegmentationConfig, SegmentationResult, SemanticSegment, SemanticSegmenter};
 
 // GPU acceleration (requires "gpu" feature)
 pub use accel::GpuAccelerator;
