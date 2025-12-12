@@ -62,6 +62,7 @@ impl Default for SaTOptions {
 pub struct SaT {
     model: OnnxModel,
     tokenizer: Tokenizer,
+    #[allow(dead_code)]
     model_name: String,
 }
 

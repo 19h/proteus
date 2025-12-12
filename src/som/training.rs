@@ -13,8 +13,8 @@
 use crate::config::SomConfig;
 use crate::error::{ProteusError, Result};
 use crate::som::simd::{
-    add_vectors_f32, find_all_bmus_parallel, find_all_bmus_parallel_fast, normalize_f32,
-    precompute_neighborhood, update_weights_f32,
+    add_vectors_f32, find_all_bmus_parallel, normalize_f32, precompute_neighborhood,
+    update_weights_f32,
 };
 use crate::som::Som;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -495,6 +495,48 @@ impl SomTrainer {
             }
         }
 
+        // Initialize GPU accelerator if available
+        #[cfg(feature = "gpu")]
+        let mut gpu = crate::accel::GpuAccelerator::new().ok();
+
+        #[cfg(not(feature = "gpu"))]
+        let gpu: Option<()> = None;
+
+        // Helper function to find BMUs using GPU (with caching) or CPU
+        #[cfg(feature = "gpu")]
+        fn find_bmus_with_gpu(
+            gpu_accel: &mut crate::accel::GpuAccelerator,
+            weights: &[f32],
+            inputs: &[(usize, Vec<f32>)],
+            n_neurons: usize,
+            w_dim: usize,
+        ) -> Vec<(usize, usize)> {
+            // Cache weights on GPU
+            if gpu_accel.cache_weights(weights, n_neurons, w_dim).is_err() {
+                return find_all_bmus_parallel(weights, inputs, n_neurons, w_dim);
+            }
+
+            // Flatten inputs
+            let batch_size = inputs.len();
+            let mut flat_inputs = Vec::with_capacity(batch_size * w_dim);
+            for (_, v) in inputs {
+                flat_inputs.extend_from_slice(v);
+            }
+
+            // Try GPU with cached weights
+            let result = match gpu_accel.find_bmus_cached(&flat_inputs, batch_size) {
+                Ok(bmu_indices) => inputs
+                    .iter()
+                    .zip(bmu_indices)
+                    .map(|((idx, _), bmu)| (*idx, bmu))
+                    .collect(),
+                Err(_) => find_all_bmus_parallel(weights, inputs, n_neurons, w_dim),
+            };
+
+            gpu_accel.clear_cached_weights();
+            result
+        }
+
         // Phase 1: Coarse topology
         let coarse_sample_size = (context_vecs.len() / 10).min(20000).max(2000);
         let coarse_lr = 0.1f32;
@@ -509,15 +551,23 @@ impl SomTrainer {
         pb.set_style(bar_style.clone());
         pb.set_message(format!("Phase 1: Coarse topology ({} neighbors)", coarse_neighbors.len()));
 
-        // Find all coarse BMUs in parallel
+        // Find all coarse BMUs (GPU or CPU)
         let coarse_inputs: Vec<(usize, Vec<f32>)> = coarse_indices
             .iter()
             .map(|&i| (i, context_vecs[i].1.clone()))
             .collect();
-        let coarse_bmus =
-            find_all_bmus_parallel(&neuron_weights, &coarse_inputs, num_neurons, weight_dim);
 
-        // Apply coarse updates sequentially
+        #[cfg(feature = "gpu")]
+        let coarse_bmus = if let Some(ref mut gpu_accel) = gpu {
+            find_bmus_with_gpu(gpu_accel, &neuron_weights, &coarse_inputs, num_neurons, weight_dim)
+        } else {
+            find_all_bmus_parallel(&neuron_weights, &coarse_inputs, num_neurons, weight_dim)
+        };
+
+        #[cfg(not(feature = "gpu"))]
+        let coarse_bmus = find_all_bmus_parallel(&neuron_weights, &coarse_inputs, num_neurons, weight_dim);
+
+        // Apply coarse updates sequentially (order matters for SOM convergence)
         for (i, (sample_idx, bmu_idx)) in coarse_bmus.iter().enumerate() {
             let input = &context_vecs[*sample_idx].1;
             let bmu_row = (*bmu_idx / dim) as i32;
@@ -558,6 +608,7 @@ impl SomTrainer {
                 pb.set_position(i as u64);
             }
         }
+
         pb.finish_and_clear();
         print_done(&format!("Phase 1: Coarse topology ({} samples)", coarse_sample_size));
 
@@ -578,9 +629,18 @@ impl SomTrainer {
             .iter()
             .map(|&i| (i, context_vecs[i].1.clone()))
             .collect();
-        let fine_bmus =
-            find_all_bmus_parallel(&neuron_weights, &fine_inputs, num_neurons, weight_dim);
 
+        #[cfg(feature = "gpu")]
+        let fine_bmus = if let Some(ref mut gpu_accel) = gpu {
+            find_bmus_with_gpu(gpu_accel, &neuron_weights, &fine_inputs, num_neurons, weight_dim)
+        } else {
+            find_all_bmus_parallel(&neuron_weights, &fine_inputs, num_neurons, weight_dim)
+        };
+
+        #[cfg(not(feature = "gpu"))]
+        let fine_bmus = find_all_bmus_parallel(&neuron_weights, &fine_inputs, num_neurons, weight_dim);
+
+        // Apply fine updates sequentially (order matters for SOM convergence)
         for (i, (sample_idx, bmu_idx)) in fine_bmus.iter().enumerate() {
             let input = &context_vecs[*sample_idx].1;
             let bmu_row = (*bmu_idx / dim) as i32;
@@ -621,44 +681,107 @@ impl SomTrainer {
                 pb.set_position(i as u64);
             }
         }
+
         pb.finish_and_clear();
         print_done(&format!("Phase 2: Fine-tuning ({} samples)", fine_sample_size));
 
-        // Phase 3: Final BMU assignment - process in chunks for progress visibility
+        // Phase 3: Final BMU assignment - use GPU if available, otherwise CPU
         let pb = ProgressBar::new(context_vecs.len() as u64);
         pb.set_style(bar_style);
-        pb.set_message(format!("Phase 3: Final BMU assignment ({} samples)", format_number(context_vecs.len())));
 
         let mut word_to_bmus: HashMap<String, Vec<usize>> = HashMap::new();
 
-        // Process in chunks to show progress during parallel computation
-        let chunk_size = 10_000usize;
-        let mut processed = 0usize;
+        #[cfg(feature = "gpu")]
+        if let Some(ref mut gpu_accel) = gpu {
+            // Get optimal batch size based on GPU's buffer limits
+            // Vulkan has 2GB limit, Metal can go much higher
+            let chunk_size = gpu_accel.recommended_batch_size(num_neurons);
+            let max_binding_gb = gpu_accel.max_buffer_binding_size() as f64 / (1024.0 * 1024.0 * 1024.0);
+            info!(
+                "GPU max buffer binding: {:.1} GB, using batch size {}",
+                max_binding_gb, chunk_size
+            );
 
-        for chunk_start in (0..context_vecs.len()).step_by(chunk_size) {
-            let chunk_end = (chunk_start + chunk_size).min(context_vecs.len());
+            // Cache weights on GPU (upload once, use for all batches)
+            if let Err(e) = gpu_accel.cache_weights(&neuron_weights, num_neurons, weight_dim) {
+                info!("Failed to cache weights on GPU: {}, falling back to CPU", e);
+            } else {
+                pb.set_message(format!(
+                    "Phase 3: GPU BMU assignment ({} samples, batch {})",
+                    format_number(context_vecs.len()),
+                    format_number(chunk_size)
+                ));
 
-            // Prepare chunk inputs
-            let chunk_inputs: Vec<(usize, Vec<f32>)> = context_vecs[chunk_start..chunk_end]
-                .iter()
-                .enumerate()
-                .map(|(i, (_, v))| (chunk_start + i, v.clone()))
-                .collect();
+                for chunk_start in (0..context_vecs.len()).step_by(chunk_size) {
+                    let chunk_end = (chunk_start + chunk_size).min(context_vecs.len());
+                    let chunk_len = chunk_end - chunk_start;
 
-            // Find BMUs for this chunk in parallel (exact search for accurate fingerprints)
-            let chunk_bmus = find_all_bmus_parallel(&neuron_weights, &chunk_inputs, num_neurons, weight_dim);
+                    // Flatten inputs for GPU
+                    let mut flat_inputs = Vec::with_capacity(chunk_len * weight_dim);
+                    for (_, v) in &context_vecs[chunk_start..chunk_end] {
+                        flat_inputs.extend_from_slice(v);
+                    }
 
-            // Record BMUs
-            for (sample_idx, bmu_idx) in chunk_bmus {
-                let center = &context_vecs[sample_idx].0;
-                word_to_bmus
-                    .entry(center.clone())
-                    .or_default()
-                    .push(bmu_idx);
+                    // Find BMUs using cached weights (fastest path)
+                    match gpu_accel.find_bmus_cached(&flat_inputs, chunk_len) {
+                        Ok(bmu_indices) => {
+                            // Record BMUs
+                            for (i, bmu_idx) in bmu_indices.into_iter().enumerate() {
+                                let center = &context_vecs[chunk_start + i].0;
+                                word_to_bmus
+                                    .entry(center.clone())
+                                    .or_default()
+                                    .push(bmu_idx);
+                            }
+                        }
+                        Err(e) => {
+                            // GPU failed, will fall back to CPU below
+                            info!("GPU BMU search failed: {}, falling back to CPU", e);
+                            break;
+                        }
+                    }
+
+                    pb.set_position(chunk_end as u64);
+                }
+
+                // Clear cached weights
+                gpu_accel.clear_cached_weights();
             }
+        }
 
-            processed = chunk_end;
-            pb.set_position(processed as u64);
+        // Fall back to CPU if GPU not available or failed
+        if word_to_bmus.is_empty() || gpu.is_none() {
+            word_to_bmus.clear();
+            pb.set_position(0);
+            pb.set_message(format!("Phase 3: CPU BMU assignment ({} samples)", format_number(context_vecs.len())));
+
+            // Process in chunks to show progress during parallel computation
+            let chunk_size = 10_000usize;
+
+            for chunk_start in (0..context_vecs.len()).step_by(chunk_size) {
+                let chunk_end = (chunk_start + chunk_size).min(context_vecs.len());
+
+                // Prepare chunk inputs
+                let chunk_inputs: Vec<(usize, Vec<f32>)> = context_vecs[chunk_start..chunk_end]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, v))| (chunk_start + i, v.clone()))
+                    .collect();
+
+                // Find BMUs for this chunk in parallel (exact search for accurate fingerprints)
+                let chunk_bmus = find_all_bmus_parallel(&neuron_weights, &chunk_inputs, num_neurons, weight_dim);
+
+                // Record BMUs
+                for (sample_idx, bmu_idx) in chunk_bmus {
+                    let center = &context_vecs[sample_idx].0;
+                    word_to_bmus
+                        .entry(center.clone())
+                        .or_default()
+                        .push(bmu_idx);
+                }
+
+                pb.set_position(chunk_end as u64);
+            }
         }
 
         pb.finish_and_clear();

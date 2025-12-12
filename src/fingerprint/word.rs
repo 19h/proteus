@@ -85,12 +85,17 @@ impl WordFingerprinter {
     /// Each word's fingerprint consists of the positions where it was most
     /// frequently matched during SOM training.
     ///
+    /// Word frequencies are computed from BMU hit counts (normalized).
     /// If a progress bar is provided, it will be updated during processing.
     pub fn create_fingerprints(
         &mut self,
         word_to_bmus: &HashMap<String, Vec<usize>>,
         progress: Option<&ProgressBar>,
     ) {
+        // Compute total BMU hits for frequency normalization
+        let total_hits: usize = word_to_bmus.values().map(|bmus| bmus.len()).sum();
+        let total_hits_f64 = total_hits as f64;
+
         for (i, (word, bmus)) in word_to_bmus.iter().enumerate() {
             // Count frequency of each position
             let mut position_counts: HashMap<usize, usize> = HashMap::new();
@@ -109,11 +114,14 @@ impl WordFingerprinter {
                 .map(|(pos, _)| pos as u32)
                 .collect();
 
+            // Compute word frequency (normalized by total hits)
+            let word_frequency = bmus.len() as f64 / total_hits_f64;
+
             let fingerprint = WordFingerprint::with_frequency(
                 word.clone(),
                 &positions,
                 self.grid_size,
-                0.0, // Frequency is computed later if needed
+                word_frequency,
             );
 
             self.fingerprints.insert(word.clone(), fingerprint);
@@ -294,11 +302,14 @@ impl WordFingerprinter {
             }
 
             // Heuristic 3: High frequency words (if frequency is tracked)
-            if wf.frequency > 0.01 {
+            // Thresholds tuned for large corpora where even common words may be < 0.01
+            if wf.frequency > 0.005 {
+                score += 0.4;  // Very high frequency - almost certainly a stopword
+            } else if wf.frequency > 0.002 {
                 score += 0.3;
-            } else if wf.frequency > 0.005 {
-                score += 0.2;
             } else if wf.frequency > 0.001 {
+                score += 0.2;
+            } else if wf.frequency > 0.0005 {
                 score += 0.1;
             }
 

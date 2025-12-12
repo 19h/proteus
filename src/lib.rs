@@ -75,6 +75,7 @@
 #![allow(clippy::needless_return)]
 #![feature(portable_simd)]
 
+pub mod accel;
 pub mod config;
 pub mod error;
 pub mod fingerprint;
@@ -95,6 +96,9 @@ pub use similarity::{CosineSimilarity, JaccardSimilarity, OverlapSimilarity, Sim
 pub use som::{Neuron, Som, SomTrainer, TrainingContext};
 pub use storage::{Retina, RetinaFormat, RetinaHeader};
 pub use text::{Normalizer, SentenceSegmenter, Token, Tokenizer};
+
+// GPU acceleration (requires "gpu" feature)
+pub use accel::GpuAccelerator;
 
 /// Library version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
