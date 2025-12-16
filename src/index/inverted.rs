@@ -2,6 +2,7 @@
 
 use crate::fingerprint::{Sdr, WordFingerprint};
 use crate::roaring::RoaringBitmap;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -37,22 +38,55 @@ impl InvertedIndex {
     }
 
     /// Creates an inverted index from word fingerprints.
+    ///
+    /// Uses parallel construction for large vocabularies.
     pub fn from_fingerprints(
         fingerprints: &HashMap<String, WordFingerprint>,
         grid_size: u32,
     ) -> Self {
-        let mut index = Self::new(grid_size);
+        use std::sync::Mutex;
 
-        // Sort words for consistent ordering
+        // Sort words for consistent ordering and assign indices
         let mut sorted_words: Vec<&String> = fingerprints.keys().collect();
         sorted_words.sort();
 
-        for word in sorted_words {
-            let wf = &fingerprints[word];
-            index.insert(word, &wf.fingerprint);
-        }
+        let index_to_word: Vec<String> = sorted_words.iter().map(|&s| s.clone()).collect();
+        let word_to_index: HashMap<String, u32> = sorted_words
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| (w.clone(), i as u32))
+            .collect();
 
-        index
+        // Pre-allocate posting lists with mutexes for parallel writes
+        let posting_lists: Vec<Mutex<RoaringBitmap>> = (0..grid_size)
+            .map(|_| Mutex::new(RoaringBitmap::new()))
+            .collect();
+
+        // Process words in parallel, each adding to the appropriate posting lists
+        sorted_words
+            .par_iter()
+            .enumerate()
+            .for_each(|(word_idx, word)| {
+                let wf = &fingerprints[*word];
+                for pos in wf.fingerprint.iter() {
+                    if (pos as usize) < posting_lists.len() {
+                        posting_lists[pos as usize].lock().unwrap().insert(word_idx as u32);
+                    }
+                }
+            });
+
+        // Extract RoaringBitmaps from Mutexes
+        let posting_lists: Vec<RoaringBitmap> = posting_lists
+            .into_iter()
+            .map(|m| m.into_inner().unwrap())
+            .collect();
+
+        Self {
+            posting_lists,
+            index_to_word,
+            word_to_index,
+            grid_size,
+        }
     }
 
     /// Inserts a word with its fingerprint into the index.
@@ -178,6 +212,20 @@ impl InvertedIndex {
     /// Returns posting list sizes for analysis.
     pub fn posting_list_sizes(&self) -> Vec<usize> {
         self.posting_lists.iter().map(|pl| pl.len() as usize).collect()
+    }
+
+    /// Returns a reference to the posting list bitmap at a position.
+    ///
+    /// Used for serialization into mmap-friendly format.
+    pub fn posting_list_at(&self, position: u32) -> Option<&RoaringBitmap> {
+        self.posting_lists.get(position as usize)
+    }
+
+    /// Returns an iterator over all posting lists.
+    ///
+    /// Used for serialization into mmap-friendly format.
+    pub fn posting_lists_iter(&self) -> impl Iterator<Item = &RoaringBitmap> {
+        self.posting_lists.iter()
     }
 }
 

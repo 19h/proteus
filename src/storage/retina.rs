@@ -74,20 +74,50 @@ impl Retina {
     }
 
     /// Loads a retina from a binary file.
+    ///
+    /// If the file contains a persisted inverted index, it will be loaded directly.
+    /// Otherwise, the index will be built from the fingerprints.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let (header, fingerprints) = RetinaFormat::read(path)?;
+        let (header, fingerprints, inverted_index) = RetinaFormat::read_with_index(path)?;
 
-        Ok(Self::with_index(
-            fingerprints,
-            header.dimension,
-            FingerprintConfig::default(),
-        ))
+        let grid_size = header.dimension * header.dimension;
+        let config = FingerprintConfig::default();
+        let mut word_fingerprinter = WordFingerprinter::new(config.clone(), grid_size);
+
+        for (_, fp) in &fingerprints {
+            word_fingerprinter.insert(fp.clone());
+        }
+
+        // Use persisted index if available, otherwise build one
+        let inverted_index = match inverted_index {
+            Some(idx) => idx,
+            None => InvertedIndex::from_fingerprints(&fingerprints, grid_size),
+        };
+
+        Ok(Self {
+            word_fingerprinter,
+            inverted_index: Some(inverted_index),
+            dimension: header.dimension,
+            config,
+        })
     }
 
     /// Saves the retina to a binary file.
+    ///
+    /// If an inverted index is present, it will be persisted for fast loading.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let fingerprints = self.word_fingerprinter.iter().map(|(w, wf)| (w.clone(), wf.clone())).collect();
-        RetinaFormat::write(path, &fingerprints, self.dimension)
+        let fingerprints: HashMap<String, WordFingerprint> = self
+            .word_fingerprinter
+            .iter()
+            .map(|(w, wf)| (w.clone(), wf.clone()))
+            .collect();
+
+        // Save with inverted index if we have one
+        if let Some(ref idx) = self.inverted_index {
+            RetinaFormat::write_with_index(path, &fingerprints, self.dimension, idx)
+        } else {
+            RetinaFormat::write(path, &fingerprints, self.dimension)
+        }
     }
 
     /// Returns the word fingerprinter.
@@ -144,7 +174,36 @@ impl Retina {
     }
 
     /// Finds words similar to a given word.
+    ///
+    /// Uses the inverted index for fast approximate search when available,
+    /// falling back to brute-force for small vocabularies or when no index exists.
     pub fn find_similar_words(&self, word: &str, k: usize) -> Result<Vec<(String, f64)>> {
+        let target = self
+            .word_fingerprinter
+            .get(word)
+            .ok_or_else(|| ProteusError::WordNotFound(word.to_string()))?;
+
+        // Use inverted index for fast search (O(active_bits * avg_posting_list))
+        if let Some(ref index) = self.inverted_index {
+            let candidates = index.search_with_scores(&target.fingerprint, k * 10);
+
+            let mut results: Vec<(String, f64)> = candidates
+                .into_iter()
+                .filter(|(w, _)| w != word)
+                .filter_map(|(w, _)| {
+                    self.word_fingerprinter.get(&w).map(|wf| {
+                        let sim = target.fingerprint.cosine_similarity(&wf.fingerprint);
+                        (w, sim)
+                    })
+                })
+                .collect();
+
+            results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            results.truncate(k);
+            return Ok(results);
+        }
+
+        // Fallback to brute force for small vocabularies or no index
         self.word_fingerprinter.find_similar(word, k)
     }
 
@@ -265,6 +324,44 @@ impl Retina {
             .collect();
 
         self.inverted_index = Some(InvertedIndex::from_fingerprints(&fingerprints, self.grid_size()));
+    }
+
+    /// Returns words that have a specific grid position active in their fingerprint.
+    ///
+    /// Requires the inverted index to be built.
+    pub fn words_at_position(&self, position: u32) -> Result<Vec<String>> {
+        let index = self
+            .inverted_index
+            .as_ref()
+            .ok_or_else(|| ProteusError::Fingerprint("Inverted index not built. Run 'proteus migrate' first.".to_string()))?;
+
+        Ok(index.words_at_position(position))
+    }
+
+    /// Returns words at multiple positions, along with how many of those positions each word covers.
+    ///
+    /// Returns (word, overlap_count) pairs sorted by overlap count (descending).
+    pub fn words_at_positions(&self, positions: &[u32], k: usize) -> Result<Vec<(String, u32)>> {
+        let index = self
+            .inverted_index
+            .as_ref()
+            .ok_or_else(|| ProteusError::Fingerprint("Inverted index not built. Run 'proteus migrate' first.".to_string()))?;
+
+        // Count how many of the query positions each word has
+        let mut word_scores: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+
+        for &pos in positions {
+            for word in index.words_at_position(pos) {
+                *word_scores.entry(word).or_insert(0) += 1;
+            }
+        }
+
+        // Sort by score descending
+        let mut results: Vec<(String, u32)> = word_scores.into_iter().collect();
+        results.sort_by(|a, b| b.1.cmp(&a.1));
+        results.truncate(k);
+
+        Ok(results)
     }
 }
 

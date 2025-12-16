@@ -8,6 +8,7 @@ use crate::error::Result;
 use crate::fingerprint::Sdr;
 use crate::storage::Retina;
 use crate::text::SentenceSegmenter;
+use std::time::Instant;
 
 /// Configuration for semantic segmentation.
 #[derive(Debug, Clone)]
@@ -22,6 +23,10 @@ pub struct SegmentationConfig {
     pub smoothing: bool,
     /// Sigma for Gaussian smoothing (default: 1.0).
     pub smoothing_sigma: f32,
+    /// Use fast regex-based sentence splitting instead of neural model (default: false).
+    pub fast_mode: bool,
+    /// Print debug/progress information during segmentation (default: false).
+    pub verbose: bool,
 }
 
 impl Default for SegmentationConfig {
@@ -32,6 +37,8 @@ impl Default for SegmentationConfig {
             min_segment_sentences: 2,
             smoothing: true,
             smoothing_sigma: 1.0,
+            fast_mode: false,
+            verbose: false,
         }
     }
 }
@@ -73,7 +80,7 @@ pub struct SegmentationResult {
 /// Semantic text segmenter using TextTiling algorithm.
 pub struct SemanticSegmenter {
     retina: Retina,
-    sentence_segmenter: SentenceSegmenter,
+    sentence_segmenter: Option<SentenceSegmenter>,
     config: SegmentationConfig,
 }
 
@@ -85,7 +92,23 @@ impl SemanticSegmenter {
 
     /// Creates a new semantic segmenter with custom configuration.
     pub fn with_config(retina: Retina, config: SegmentationConfig) -> Result<Self> {
-        let sentence_segmenter = SentenceSegmenter::new("sat-3l-sm")?;
+        // Only load the neural model if not in fast mode
+        let sentence_segmenter = if config.fast_mode {
+            if config.verbose {
+                eprintln!("[segmenter] Using fast regex-based sentence splitting");
+            }
+            None
+        } else {
+            if config.verbose {
+                eprintln!("[segmenter] Loading neural sentence model (sat-3l-sm)...");
+                let start = Instant::now();
+                let seg = SentenceSegmenter::new("sat-3l-sm")?;
+                eprintln!("[segmenter] Model loaded in {:?}", start.elapsed());
+                Some(seg)
+            } else {
+                Some(SentenceSegmenter::new("sat-3l-sm")?)
+            }
+        };
         Ok(Self {
             retina,
             sentence_segmenter,
@@ -93,12 +116,73 @@ impl SemanticSegmenter {
         })
     }
 
+    /// Fast regex-based sentence splitting.
+    /// Splits on .!? followed by whitespace or end of string.
+    fn fast_sentence_split(text: &str) -> Vec<String> {
+        let mut sentences = Vec::new();
+        let mut current = String::new();
+        let mut chars = text.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            current.push(c);
+
+            // Check for sentence-ending punctuation
+            if c == '.' || c == '!' || c == '?' {
+                // Look ahead - is it followed by whitespace, newline, or end?
+                match chars.peek() {
+                    None => {
+                        // End of text
+                        let trimmed = current.trim().to_string();
+                        if !trimmed.is_empty() {
+                            sentences.push(trimmed);
+                        }
+                        current.clear();
+                    }
+                    Some(&next) if next.is_whitespace() => {
+                        // Sentence boundary
+                        let trimmed = current.trim().to_string();
+                        if !trimmed.is_empty() {
+                            sentences.push(trimmed);
+                        }
+                        current.clear();
+                    }
+                    _ => {
+                        // Not a sentence boundary (e.g., "Dr." or "3.14")
+                    }
+                }
+            }
+        }
+
+        // Don't forget any remaining text
+        let trimmed = current.trim().to_string();
+        if !trimmed.is_empty() {
+            sentences.push(trimmed);
+        }
+
+        sentences
+    }
+
     /// Performs semantic segmentation on the given text.
     ///
     /// Returns a full result including segments and analysis metadata.
     pub fn segment(&mut self, text: &str) -> Result<SegmentationResult> {
+        let total_start = Instant::now();
+
         // Step 1: Sentence segmentation
-        let sentences = self.sentence_segmenter.segment(text)?;
+        if self.config.verbose {
+            eprintln!("[segment] Step 1: Sentence segmentation...");
+        }
+        let step_start = Instant::now();
+
+        let sentences = if let Some(ref mut segmenter) = self.sentence_segmenter {
+            segmenter.segment(text)?
+        } else {
+            Self::fast_sentence_split(text)
+        };
+
+        if self.config.verbose {
+            eprintln!("[segment]   Found {} sentences in {:?}", sentences.len(), step_start.elapsed());
+        }
 
         if sentences.is_empty() {
             return Ok(SegmentationResult {
@@ -115,6 +199,10 @@ impl SemanticSegmenter {
 
         // Handle case where text is too short for blocking
         if sentences.len() < self.config.block_size * 2 {
+            if self.config.verbose {
+                eprintln!("[segment] Text too short for blocking ({} sentences < {} min), returning single segment",
+                    sentences.len(), self.config.block_size * 2);
+            }
             let segment = SemanticSegment {
                 text: sentences.join(" "),
                 sentences: sentences.clone(),
@@ -134,12 +222,31 @@ impl SemanticSegmenter {
         }
 
         // Step 2: Compute fingerprints for each sentence
+        if self.config.verbose {
+            eprintln!("[segment] Step 2: Computing fingerprints for {} sentences...", sentences.len());
+        }
+        let step_start = Instant::now();
+
         let sentence_fingerprints: Vec<Sdr> = sentences
             .iter()
             .map(|s| self.retina.fingerprint_text(s))
             .collect();
 
+        if self.config.verbose {
+            let avg_bits: f64 = sentence_fingerprints.iter()
+                .map(|fp| fp.cardinality() as f64)
+                .sum::<f64>() / sentence_fingerprints.len() as f64;
+            eprintln!("[segment]   Fingerprinted in {:?} (avg {:.1} active bits/sentence)",
+                step_start.elapsed(), avg_bits);
+        }
+
         // Step 3: Create blocks and compute block fingerprints
+        if self.config.verbose {
+            eprintln!("[segment] Step 3: Creating {} blocks ({} sentences/block)...",
+                sentences.len() / self.config.block_size, self.config.block_size);
+        }
+        let step_start = Instant::now();
+
         let block_size = self.config.block_size;
         let num_blocks = sentences.len() / block_size;
 
@@ -151,12 +258,32 @@ impl SemanticSegmenter {
             })
             .collect();
 
+        if self.config.verbose {
+            eprintln!("[segment]   Created {} block fingerprints in {:?}",
+                block_fingerprints.len(), step_start.elapsed());
+        }
+
         // Step 4: Compute similarity scores between adjacent blocks
+        if self.config.verbose {
+            eprintln!("[segment] Step 4: Computing {} similarity scores...", block_fingerprints.len().saturating_sub(1));
+        }
+        let step_start = Instant::now();
+
         let similarity_scores: Vec<f32> = (0..block_fingerprints.len().saturating_sub(1))
             .map(|i| {
                 block_fingerprints[i].cosine_similarity(&block_fingerprints[i + 1]) as f32
             })
             .collect();
+
+        if self.config.verbose {
+            if !similarity_scores.is_empty() {
+                let min = similarity_scores.iter().cloned().fold(f32::INFINITY, f32::min);
+                let max = similarity_scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let avg = similarity_scores.iter().sum::<f32>() / similarity_scores.len() as f32;
+                eprintln!("[segment]   Similarities in {:?} (min={:.3}, avg={:.3}, max={:.3})",
+                    step_start.elapsed(), min, avg, max);
+            }
+        }
 
         if similarity_scores.is_empty() {
             let segment = SemanticSegment {
@@ -178,24 +305,59 @@ impl SemanticSegmenter {
         }
 
         // Step 5: Compute depth scores
+        if self.config.verbose {
+            eprintln!("[segment] Step 5: Computing depth scores...");
+        }
+        let step_start = Instant::now();
+
         let mut depth_scores = self.compute_depth_scores(&similarity_scores);
+
+        if self.config.verbose {
+            eprintln!("[segment]   Depth scores computed in {:?}", step_start.elapsed());
+        }
 
         // Step 6: Apply Gaussian smoothing if enabled
         if self.config.smoothing && depth_scores.len() > 2 {
+            if self.config.verbose {
+                eprintln!("[segment] Step 6: Applying Gaussian smoothing (sigma={})...", self.config.smoothing_sigma);
+            }
+            let step_start = Instant::now();
             depth_scores = self.gaussian_smooth(&depth_scores, self.config.smoothing_sigma);
+            if self.config.verbose {
+                eprintln!("[segment]   Smoothing applied in {:?}", step_start.elapsed());
+            }
+        } else if self.config.verbose {
+            eprintln!("[segment] Step 6: Skipping smoothing (disabled or too few scores)");
         }
 
         // Step 7: Compute threshold for boundary detection
+        if self.config.verbose {
+            eprintln!("[segment] Step 7: Computing boundary threshold...");
+        }
+
         let (depth_mean, depth_std) = self.mean_std(&depth_scores);
         let threshold = depth_mean + self.config.depth_threshold * depth_std;
 
+        if self.config.verbose {
+            eprintln!("[segment]   Depth mean={:.4}, std={:.4}, threshold={:.4} ({:.1} std above mean)",
+                depth_mean, depth_std, threshold, self.config.depth_threshold);
+        }
+
         // Step 8: Find boundary indices (in terms of blocks, then convert to sentences)
+        if self.config.verbose {
+            eprintln!("[segment] Step 8: Finding boundaries...");
+        }
+
         let mut block_boundaries: Vec<usize> = depth_scores
             .iter()
             .enumerate()
             .filter(|(_, &d)| d > threshold)
             .map(|(i, _)| i + 1) // +1 because boundary is after block i
             .collect();
+
+        if self.config.verbose {
+            eprintln!("[segment]   Found {} raw boundaries above threshold", block_boundaries.len());
+        }
 
         // Enforce minimum segment size
         block_boundaries = self.enforce_min_segment_size(
@@ -204,6 +366,10 @@ impl SemanticSegmenter {
             self.config.min_segment_sentences / block_size.max(1),
         );
 
+        if self.config.verbose {
+            eprintln!("[segment]   After enforcing min segment size: {} boundaries", block_boundaries.len());
+        }
+
         // Convert block boundaries to sentence boundaries
         let boundary_indices: Vec<usize> = block_boundaries
             .iter()
@@ -211,7 +377,17 @@ impl SemanticSegmenter {
             .collect();
 
         // Step 9: Create segments
+        if self.config.verbose {
+            eprintln!("[segment] Step 9: Creating {} segments...", boundary_indices.len() + 1);
+        }
+
         let segments = self.create_segments(&sentences, &boundary_indices);
+
+        if self.config.verbose {
+            eprintln!("[segment] Complete! Total time: {:?}", total_start.elapsed());
+            eprintln!("[segment] Summary: {} sentences -> {} blocks -> {} segments",
+                sentences.len(), num_blocks, segments.len());
+        }
 
         Ok(SegmentationResult {
             segments,

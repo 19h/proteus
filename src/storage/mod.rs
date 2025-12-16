@@ -3,5 +3,5 @@
 mod format;
 mod retina;
 
-pub use format::{RetinaFormat, RetinaHeader};
+pub use format::{MmappedRetina, RetinaFormat, RetinaHeader};
 pub use retina::Retina;
