@@ -92,13 +92,18 @@ pub mod wtpsplit;
 pub use config::{Config, FingerprintConfig, SomConfig, StorageConfig, TextConfig};
 pub use error::{ProteusError, Result};
 pub use fingerprint::{Sdr, TextFingerprinter, WordFingerprint, WordFingerprinter};
+pub use fingerprint::{Hypervector, ItemMemory, SequenceEncoder, NgramEncoder, AnalogySolver};
 pub use index::{
     InvertedIndex, IndexStats, ToroidalGrid,
     SemanticLookupEngine, SemanticLookupConfig, LookupResult,
     LookupFactors, PositionStats, SemanticCluster,
 };
+pub use index::{HnswIndex, HnswConfig, HnswStats};
+pub use index::{ProductQuantizer, PqConfig, OptimizedProductQuantizer};
+pub use index::{SimHash, MinHash, BitSamplingLsh, LshIndex, LshStats};
 pub use similarity::{CosineSimilarity, JaccardSimilarity, OverlapSimilarity, SimilarityMeasure, SimilarityType};
 pub use som::{Neuron, Som, SomTrainer, TrainingContext};
+pub use som::{BatchSomTrainer, BatchSomConfig, TrainingMetrics, GrowingSom};
 pub use storage::{MmappedRetina, Retina, RetinaFormat, RetinaHeader};
 pub use text::{Normalizer, SentenceSegmenter, Token, Tokenizer};
 pub use segmentation::{SegmentationConfig, SegmentationResult, SemanticSegment, SemanticSegmenter};

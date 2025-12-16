@@ -53,6 +53,7 @@ Proteus is a complete, from-scratch implementation in Rust - not a port of exist
 - **Unicode-aware tokenization**: Proper handling of international text via `unicode-segmentation`
 - **Configurable normalization**: Lowercase, punctuation removal, NFD normalization
 - **Sentence segmentation**: Neural sentence boundary detection using [wtpsplit](https://github.com/bminixhofer/wtpsplit) (SaT models)
+- **Semantic segmentation**: Topic-based text segmentation using TextTiling algorithm with SDR fingerprints
 - **Context window extraction**: Sentence-aware windows that don't cross boundaries
 
 ### Storage & Persistence
@@ -67,6 +68,14 @@ Proteus is a complete, from-scratch implementation in Rust - not a port of exist
 - **SIMD optimization**: Vectorized distance calculations (f32)
 - **Compressed bitmaps**: RoaringBitmap for space-efficient SDR storage
 - **Optimized search**: Inverted index with RoaringBitmap posting lists
+
+### Advanced Indexing & Search
+
+- **HNSW Index**: Hierarchical Navigable Small World graphs for O(log n) approximate nearest neighbor search
+- **Product Quantization**: ~100x compression with asymmetric distance computation
+- **Locality-Sensitive Hashing**: SimHash, MinHash, and BitSampling for sublinear similarity search
+- **Mini-batch SOM**: Modern training with Adam optimizer and cosine annealing
+- **Hyperdimensional Computing**: Vector Symbolic Architectures for symbolic reasoning on SDRs
 
 ## Installation
 
@@ -199,6 +208,41 @@ USAGE:
 ```
 
 Shows grid dimension, total positions, and vocabulary size.
+
+#### `proteus segment`
+
+Segment text into semantic sections based on topic shifts.
+
+```
+USAGE:
+    proteus segment [OPTIONS] -r <RETINA> -i <INPUT>
+
+OPTIONS:
+    -r, --retina <RETINA>            Retina file to use
+    -i, --input <INPUT>              Input text file
+    -b, --block-size <BLOCK_SIZE>    Sentences per block for comparison [default: 3]
+    -t, --threshold <THRESHOLD>      Depth threshold in std deviations [default: 0.5]
+    -m, --min-segment <MIN_SEGMENT>  Minimum sentences per segment [default: 2]
+        --debug                      Show similarity/depth scores for analysis
+```
+
+Uses the TextTiling algorithm (Hearst, 1997) adapted for SDR fingerprints to detect topic boundaries. The algorithm:
+1. Segments text into sentences using neural sentence boundary detection
+2. Groups sentences into blocks and computes block fingerprints
+3. Measures similarity between adjacent blocks
+4. Identifies boundaries where similarity drops significantly (depth score analysis)
+
+Example:
+```bash
+# Basic segmentation
+proteus segment -r english.retina -i article.txt
+
+# With debug output showing similarity analysis
+proteus segment -r english.retina -i article.txt --debug
+
+# Adjust sensitivity (higher threshold = fewer boundaries)
+proteus segment -r english.retina -i article.txt --threshold 1.0
+```
 
 ## Library Usage
 
@@ -362,6 +406,46 @@ fn sentence_aware_tokenization() -> Result<()> {
 }
 ```
 
+### Semantic Text Segmentation
+
+```rust
+use proteus::{Retina, SemanticSegmenter, SegmentationConfig, Result};
+
+fn segment_into_topics() -> Result<()> {
+    let retina = Retina::load("english.retina")?;
+
+    // Create segmenter with custom configuration
+    let config = SegmentationConfig {
+        block_size: 3,              // Sentences per block
+        depth_threshold: 0.5,       // Std deviations above mean for boundaries
+        min_segment_sentences: 2,   // Minimum sentences per segment
+        smoothing: true,            // Apply Gaussian smoothing
+        smoothing_sigma: 1.0,
+    };
+
+    let mut segmenter = SemanticSegmenter::with_config(retina, config)?;
+
+    let text = std::fs::read_to_string("article.txt")?;
+    let result = segmenter.segment(&text)?;
+
+    // Access detailed analysis
+    println!("Found {} segments with {} boundaries",
+        result.segments.len(),
+        result.boundary_indices.len());
+    println!("Depth scores: mean={:.3}, std={:.3}",
+        result.depth_mean, result.depth_std);
+
+    // Output segments
+    for (i, segment) in result.segments.iter().enumerate() {
+        println!("\n=== Segment {} ({} sentences) ===",
+            i + 1, segment.sentences.len());
+        println!("{}", segment.text);
+    }
+
+    Ok(())
+}
+```
+
 ### Working with SDRs Directly
 
 ```rust
@@ -396,6 +480,217 @@ fn sdr_operations() {
     // Sparsify (limit active bits)
     let mut sdr = Sdr::from_positions(&(0..1000).collect::<Vec<_>>(), size);
     sdr.sparsify(328);  // Keep at most 328 active bits
+}
+```
+
+### Advanced Indexing Algorithms
+
+Proteus includes state-of-the-art indexing algorithms for large-scale similarity search:
+
+#### HNSW (Hierarchical Navigable Small World)
+
+O(log n) approximate nearest neighbor search using multi-layer navigable graphs:
+
+```rust
+use proteus::index::{HnswIndex, HnswConfig};
+use proteus::Sdr;
+
+fn hnsw_search() {
+    // Configure HNSW parameters
+    let config = HnswConfig {
+        m: 32,                  // Max connections per node at layer 0
+        m_max: 16,              // Max connections at higher layers
+        ef_construction: 200,   // Build-time candidate list size
+        ef_search: 50,          // Query-time candidate list size
+        ml: 1.0 / (32_f64).ln(), // Level generation factor
+        seed: Some(42),
+    };
+
+    // Build index from fingerprints
+    let fingerprints: Vec<Sdr> = load_fingerprints();
+    let index = HnswIndex::build(config, fingerprints);
+
+    // Search for k nearest neighbors
+    let query = Sdr::from_positions(&[100, 200, 300], 16384);
+    let results = index.search(&query, 10);  // Returns Vec<(id, distance)>
+
+    for (id, dist) in results {
+        println!("ID: {}, Distance: {:.4}", id, dist);
+    }
+
+    // Get index statistics
+    let stats = index.stats();
+    println!("Nodes: {}, Max layer: {}", stats.num_nodes, stats.max_layer);
+}
+```
+
+#### Product Quantization (PQ)
+
+Compress vectors for memory-efficient storage with fast distance computation:
+
+```rust
+use proteus::index::{ProductQuantizer, PqConfig};
+
+fn product_quantization() {
+    let config = PqConfig {
+        num_subquantizers: 8,   // M partitions (must divide vector dim)
+        num_centroids: 256,     // K centroids per subquantizer
+        kmeans_iterations: 25,
+        seed: Some(42),
+    };
+
+    // Train on representative vectors
+    let training_vectors: Vec<Vec<f32>> = load_training_data();
+    let pq = ProductQuantizer::train(&training_vectors, config);
+
+    // Encode vectors (compression)
+    let original = vec![0.1, 0.2, 0.3, /* ... */];
+    let codes = pq.encode(&original);  // Vec<u8> - much smaller!
+
+    // Compute distances without full decompression (ADC)
+    let query = vec![0.15, 0.25, 0.35, /* ... */];
+    let distance = pq.asymmetric_distance(&query, &codes);
+
+    // Decode back to approximate vector
+    let reconstructed = pq.decode(&codes);
+}
+```
+
+#### Locality-Sensitive Hashing (LSH)
+
+Sublinear similarity search using hash-based bucketing:
+
+```rust
+use proteus::index::{SimHash, MinHash, BitSamplingLsh, LshIndex};
+use proteus::Sdr;
+
+fn lsh_search() {
+    // SimHash for cosine similarity on dense vectors
+    let simhash = SimHash::new(128, 64, Some(42));  // dim, num_bits, seed
+    let hash1 = simhash.hash(&dense_vector1);
+    let hash2 = simhash.hash(&dense_vector2);
+    let hamming_dist = (hash1 ^ hash2).count_ones();
+
+    // MinHash for Jaccard similarity on sets
+    let minhash = MinHash::new(128, Some(42));  // num_hashes, seed
+    let sig1 = minhash.signature(&set1);
+    let sig2 = minhash.signature(&set2);
+    let approx_jaccard = MinHash::estimate_jaccard(&sig1, &sig2);
+
+    // BitSampling for sparse binary vectors (SDRs)
+    let bitsampling = BitSamplingLsh::new(16384, 64, Some(42));
+    let sdr_hash = bitsampling.hash(&sdr);
+
+    // Multi-table LSH index for fast retrieval
+    let sdrs: Vec<Sdr> = load_fingerprints();
+    let mut index = LshIndex::new(bitsampling, 10, 4);  // hasher, tables, bands
+    index.build(&sdrs);
+
+    let query = Sdr::from_positions(&[100, 200, 300], 16384);
+    let candidates = index.query(&query);  // Returns candidate IDs
+}
+```
+
+#### Mini-batch SOM Training
+
+Modern SOM training with adaptive optimization:
+
+```rust
+use proteus::som::{BatchSomTrainer, BatchSomConfig, Som, SomConfig};
+
+fn minibatch_training() {
+    let config = BatchSomConfig {
+        batch_size: 256,
+        epochs: 10,
+        use_adam: true,           // Adam optimizer
+        adam_beta1: 0.9,
+        adam_beta2: 0.999,
+        use_cosine_annealing: true,
+        warm_restarts: 2,         // Restart count for SGDR
+        initial_lr: 0.1,
+        final_lr: 0.001,
+        initial_radius: 32.0,
+        final_radius: 1.0,
+    };
+
+    let som_config = SomConfig {
+        dimension: 64,
+        weight_dimension: 100,
+        ..Default::default()
+    };
+
+    let mut som = Som::new(&som_config);
+    let mut trainer = BatchSomTrainer::new(config);
+
+    // Train with monitoring
+    let training_data: Vec<Vec<f32>> = load_embeddings();
+    let metrics = trainer.train(&mut som, &training_data);
+
+    println!("Final QE: {:.4}", metrics.quantization_error);
+    println!("Topographic error: {:.4}", metrics.topographic_error);
+}
+```
+
+### Hyperdimensional Computing (HDC)
+
+Vector Symbolic Architectures for symbolic reasoning on high-dimensional binary vectors:
+
+```rust
+use proteus::fingerprint::{Hypervector, ItemMemory, SequenceEncoder, AnalogySolver};
+
+fn hyperdimensional_computing() {
+    // Create random hypervectors (50% density for HDC operations)
+    let hv_king = Hypervector::random(10000, 0.5, Some(1));
+    let hv_queen = Hypervector::random(10000, 0.5, Some(2));
+    let hv_man = Hypervector::random(10000, 0.5, Some(3));
+    let hv_woman = Hypervector::random(10000, 0.5, Some(4));
+
+    // Bundling (⊕): Combine vectors (soft union)
+    let royalty = Hypervector::bundle(&[&hv_king, &hv_queen], 0.5);
+    assert!(royalty.similarity(&hv_king) > 0.3);  // Similar to both
+
+    // Binding (⊗): Create associations via XOR
+    let king_male = hv_king.bind(&hv_man);
+    let queen_female = hv_queen.bind(&hv_woman);
+
+    // Unbinding recovers the other component
+    let recovered = king_male.unbind(&hv_king);
+    assert!(recovered.similarity(&hv_man) > 0.9);
+
+    // Permutation (ρ): Position encoding for sequences
+    let shifted = hv_king.permute(100);
+    let restored = shifted.permute_inverse(100);
+    assert_eq!(hv_king.similarity(&restored), 1.0);
+
+    // Item Memory: Content-addressable storage
+    let mut memory = ItemMemory::new(10000, 0.5);
+    memory.encode("apple", Some(1));
+    memory.encode("banana", Some(2));
+    memory.encode("cherry", Some(3));
+
+    let apple_hv = memory.get("apple").unwrap();
+    let (name, similarity) = memory.query(apple_hv).unwrap();
+    assert_eq!(name, "apple");
+
+    // Sequence Encoding: Order-preserving representations
+    let mut encoder = SequenceEncoder::new(10000, 0.5, 10);
+    let seq1 = encoder.encode_sequence(&["the", "cat", "sat"]);
+    let seq2 = encoder.encode_sequence(&["the", "dog", "sat"]);
+    let seq3 = encoder.encode_sequence(&["a", "bird", "flew"]);
+
+    // Similar sequences have higher similarity
+    assert!(seq1.sdr.jaccard_similarity(&seq2.sdr) >
+            seq1.sdr.jaccard_similarity(&seq3.sdr));
+
+    // Analogy Solving: king - man + woman ≈ queen
+    let mut solver = AnalogySolver::new(10000, 0.5);
+    solver.add_concept("king", Some(1));
+    solver.add_concept("queen", Some(2));
+    solver.add_concept("man", Some(3));
+    solver.add_concept("woman", Some(4));
+
+    let results = solver.solve("king", "man", "woman", 3);
+    // Returns concepts most similar to (king - man + woman)
 }
 ```
 
@@ -463,13 +758,20 @@ proteus/
 │   │   ├── mod.rs
 │   │   ├── map.rs          # SOM grid implementation
 │   │   ├── neuron.rs       # Neuron with weight vectors
-│   │   └── training.rs     # Training algorithms
+│   │   ├── training.rs     # Training algorithms
+│   │   ├── batch.rs        # Mini-batch training with Adam optimizer
+│   │   └── simd.rs         # SIMD-accelerated operations
 │   │
 │   ├── fingerprint/        # Fingerprint Generation
 │   │   ├── mod.rs
 │   │   ├── sdr.rs          # SDR with RoaringBitmap
 │   │   ├── word.rs         # Word fingerprinting
-│   │   └── text.rs         # Text fingerprinting
+│   │   ├── text.rs         # Text fingerprinting
+│   │   └── hdc.rs          # Hyperdimensional Computing operations
+│   │
+│   ├── segmentation/       # Semantic Segmentation
+│   │   ├── mod.rs
+│   │   └── semantic.rs     # TextTiling algorithm with SDRs
 │   │
 │   ├── roaring/            # Vendored RoaringBitmap
 │   │
@@ -478,9 +780,12 @@ proteus/
 │   │   ├── format.rs       # Binary format (header + index + data)
 │   │   └── retina.rs       # Retina management
 │   │
-│   ├── index/              # Search Index
+│   ├── index/              # Search & Indexing
 │   │   ├── mod.rs
-│   │   └── inverted.rs     # Inverted index for similarity search
+│   │   ├── inverted.rs     # Inverted index for similarity search
+│   │   ├── hnsw.rs         # HNSW graph index for ANN search
+│   │   ├── pq.rs           # Product Quantization compression
+│   │   └── lsh.rs          # Locality-Sensitive Hashing
 │   │
 │   └── similarity/         # Similarity Measures
 │       ├── mod.rs
@@ -744,6 +1049,105 @@ pub struct SentenceSegmenter { ... }
 impl SentenceSegmenter {
     pub fn new(model: &str) -> Result<Self>;  // "sat-3l-sm", "sat-3l", "sat-6l", "sat-12l"
     pub fn segment(&mut self, text: &str) -> Result<Vec<String>>;
+}
+
+// Semantic segmentation (topic detection)
+pub struct SemanticSegmenter { ... }
+
+impl SemanticSegmenter {
+    pub fn new(retina: Retina) -> Result<Self>;
+    pub fn with_config(retina: Retina, config: SegmentationConfig) -> Result<Self>;
+    pub fn segment(&mut self, text: &str) -> Result<SegmentationResult>;
+    pub fn segment_text(&mut self, text: &str) -> Result<Vec<SemanticSegment>>;
+}
+
+pub struct SegmentationResult {
+    pub segments: Vec<SemanticSegment>,
+    pub boundary_indices: Vec<usize>,
+    pub similarity_scores: Vec<f32>,
+    pub depth_scores: Vec<f32>,
+}
+```
+
+### Advanced Index Types
+
+```rust
+// HNSW Graph Index
+pub struct HnswIndex { ... }
+
+impl HnswIndex {
+    pub fn build(config: HnswConfig, data: Vec<Sdr>) -> Self;
+    pub fn search(&self, query: &Sdr, k: usize) -> Vec<(u32, f32)>;
+    pub fn search_ef(&self, query: &Sdr, k: usize, ef: usize) -> Vec<(u32, f32)>;
+    pub fn stats(&self) -> HnswStats;
+}
+
+pub struct HnswConfig {
+    pub m: usize,              // Max connections at layer 0
+    pub m_max: usize,          // Max connections at higher layers
+    pub ef_construction: usize, // Build-time candidate list
+    pub ef_search: usize,       // Query-time candidate list
+    pub ml: f64,               // Level multiplier
+    pub seed: Option<u64>,
+}
+
+// Product Quantization
+pub struct ProductQuantizer { ... }
+
+impl ProductQuantizer {
+    pub fn train(vectors: &[Vec<f32>], config: PqConfig) -> Self;
+    pub fn encode(&self, vector: &[f32]) -> Vec<u8>;
+    pub fn decode(&self, codes: &[u8]) -> Vec<f32>;
+    pub fn asymmetric_distance(&self, query: &[f32], codes: &[u8]) -> f32;
+}
+
+// Locality-Sensitive Hashing
+pub trait LshHasher: Clone {
+    fn hash(&self, data: &Sdr) -> u64;
+    fn hash_band(&self, data: &Sdr, band: usize) -> u64;
+}
+
+pub struct SimHash { ... }      // Cosine similarity
+pub struct MinHash { ... }      // Jaccard similarity
+pub struct BitSamplingLsh { ... } // Binary vector hashing
+
+pub struct LshIndex<H: LshHasher> { ... }
+
+impl<H: LshHasher> LshIndex<H> {
+    pub fn new(hasher: H, num_tables: usize, bands_per_table: usize) -> Self;
+    pub fn build(&mut self, data: &[Sdr]);
+    pub fn query(&self, query: &Sdr) -> Vec<u32>;
+}
+
+// Hyperdimensional Computing
+pub struct Hypervector { ... }
+
+impl Hypervector {
+    pub fn random(dimension: u32, sparsity: f64, seed: Option<u64>) -> Self;
+    pub fn bundle(vectors: &[&Hypervector], threshold: f64) -> Self;
+    pub fn bind(&self, other: &Hypervector) -> Self;
+    pub fn unbind(&self, other: &Hypervector) -> Self;
+    pub fn permute(&self, amount: i32) -> Self;
+    pub fn similarity(&self, other: &Hypervector) -> f64;
+}
+
+pub struct ItemMemory { ... }
+pub struct SequenceEncoder { ... }
+pub struct NgramEncoder { ... }
+pub struct AnalogySolver { ... }
+
+// Mini-batch SOM Training
+pub struct BatchSomTrainer { ... }
+
+impl BatchSomTrainer {
+    pub fn new(config: BatchSomConfig) -> Self;
+    pub fn train(&mut self, som: &mut Som, data: &[Vec<f32>]) -> TrainingMetrics;
+}
+
+pub struct TrainingMetrics {
+    pub quantization_error: f32,
+    pub topographic_error: f32,
+    pub learning_rate_history: Vec<f32>,
 }
 ```
 
@@ -1215,10 +1619,23 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## References
 
+### Semantic Folding & SDRs
 1. Webber, F. (2015). "Semantic Folding Theory And its Application in Semantic Fingerprinting." arXiv:1511.08855
 2. De Sousa Webber, F. (2015). "The Semantic Folding Theory And its Application in Semantic Fingerprinting." Cortical.io
 3. Kohonen, T. (2001). "Self-Organizing Maps." Springer Series in Information Sciences.
 4. Ahmad, S., & Hawkins, J. (2016). "How do neurons operate on sparse distributed representations? A mathematical theory of sparsity, neurons and active dendrites." arXiv:1601.00720
+5. Hearst, M. A. (1997). "TextTiling: Segmenting Text into Multi-paragraph Subtopic Passages." Computational Linguistics, 23(1), 33-64.
+
+### Advanced Indexing Algorithms
+6. Malkov, Y. A., & Yashunin, D. A. (2018). "Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs." IEEE TPAMI. arXiv:1603.09320
+7. Jégou, H., Douze, M., & Schmid, C. (2011). "Product Quantization for Nearest Neighbor Search." IEEE TPAMI.
+8. Charikar, M. S. (2002). "Similarity Estimation Techniques from Rounding Algorithms." STOC.
+9. Broder, A. Z. (1997). "On the Resemblance and Containment of Documents." SEQUENCES.
+
+### Hyperdimensional Computing
+10. Kanerva, P. (2009). "Hyperdimensional Computing: An Introduction to Computing in Distributed Representation with High-Dimensional Random Vectors." Cognitive Computation, 1(2), 139-159.
+11. Plate, T. A. (2003). "Holographic Reduced Representation: Distributed Representation for Cognitive Structures." CSLI Publications.
+12. Gayler, R. W. (2003). "Vector Symbolic Architectures Answer Jackendoff's Challenges for Cognitive Neuroscience." ICCS/ASCS Joint International Conference.
 
 ---
 
