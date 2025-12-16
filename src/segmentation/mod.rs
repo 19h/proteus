@@ -7,7 +7,9 @@
 //! Sparse Distributed Representations (SDRs).
 
 mod semantic;
+pub mod sentence;
 
 pub use semantic::{
     SegmentationConfig, SegmentationResult, SemanticSegment, SemanticSegmenter,
 };
+pub use sentence::split_sentences;

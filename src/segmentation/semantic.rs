@@ -6,6 +6,7 @@
 
 use crate::error::Result;
 use crate::fingerprint::Sdr;
+use crate::segmentation::sentence::split_sentences;
 use crate::storage::Retina;
 use crate::text::SentenceSegmenter;
 use std::time::Instant;
@@ -116,51 +117,6 @@ impl SemanticSegmenter {
         })
     }
 
-    /// Fast regex-based sentence splitting.
-    /// Splits on .!? followed by whitespace or end of string.
-    fn fast_sentence_split(text: &str) -> Vec<String> {
-        let mut sentences = Vec::new();
-        let mut current = String::new();
-        let mut chars = text.chars().peekable();
-
-        while let Some(c) = chars.next() {
-            current.push(c);
-
-            // Check for sentence-ending punctuation
-            if c == '.' || c == '!' || c == '?' {
-                // Look ahead - is it followed by whitespace, newline, or end?
-                match chars.peek() {
-                    None => {
-                        // End of text
-                        let trimmed = current.trim().to_string();
-                        if !trimmed.is_empty() {
-                            sentences.push(trimmed);
-                        }
-                        current.clear();
-                    }
-                    Some(&next) if next.is_whitespace() => {
-                        // Sentence boundary
-                        let trimmed = current.trim().to_string();
-                        if !trimmed.is_empty() {
-                            sentences.push(trimmed);
-                        }
-                        current.clear();
-                    }
-                    _ => {
-                        // Not a sentence boundary (e.g., "Dr." or "3.14")
-                    }
-                }
-            }
-        }
-
-        // Don't forget any remaining text
-        let trimmed = current.trim().to_string();
-        if !trimmed.is_empty() {
-            sentences.push(trimmed);
-        }
-
-        sentences
-    }
 
     /// Performs semantic segmentation on the given text.
     ///
@@ -177,7 +133,7 @@ impl SemanticSegmenter {
         let sentences = if let Some(ref mut segmenter) = self.sentence_segmenter {
             segmenter.segment(text)?
         } else {
-            Self::fast_sentence_split(text)
+            split_sentences(text)
         };
 
         if self.config.verbose {
