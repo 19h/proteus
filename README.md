@@ -65,6 +65,7 @@ there is no separate `docs/README.md`.
 - [Architecture](docs/architecture.md) - data flow, source ownership and format compatibility.
 - [Algorithm contract](docs/algorithm.md) - equations, precision, complexity, assumptions and primary references.
 - [Development](docs/development.md) - test targets, measurement, contribution and documentation conventions.
+- [Agent engineering guide](AGENTS.md) - repository contracts, validation and required documentation upkeep.
 - [Validation record](docs/validation.md) - exercised boundaries, corpus results and historical binary provenance.
 - [Scaling and cross-lingual research](docs/roadmap.md) - condensed roadmap, dependencies and falsification probes.
 

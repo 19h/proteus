@@ -50,6 +50,10 @@ not an accuracy score. No dedicated benchmark target is currently checked in.
 
 ## Contributing and documentation
 
+Agents must read [the engineering guide](../AGENTS.md) before making changes;
+its [documentation contract](../AGENTS.md#18-documentation-structure-one-entry-point)
+defines page ownership and the updates required with future code changes.
+
 Changes to algorithms or serialization need the relevant numerical or
 compatibility checks. Keep source/API changes and runnable examples consistent.
 Generated models, corpora and local performance results do not belong in a
