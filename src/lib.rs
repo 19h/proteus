@@ -83,6 +83,7 @@ pub mod fingerprint;
 pub mod index;
 pub mod roaring;
 pub mod segmentation;
+pub mod semantic;
 pub mod similarity;
 pub mod som;
 pub mod storage;

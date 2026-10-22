@@ -337,3 +337,340 @@ publication checks and angular metadata migration checks pass.
 per-seed comparisons, and a source snapshot for this working-tree implementation.
 Detailed command output and acceptance logs are retained alongside it. The
 pre-existing user corpora, models and other untracked files were not modified.
+
+## Theory audit and independent verb evaluation
+
+On 2026-10-22, a theory review at revision `afebd3a` evaluated the six existing
+WikiText-2 models without retraining or selecting parameters. The protocol and
+model hashes were recorded before downloading the official
+[SimVerb-3500 attachment](https://aclanthology.org/attachments/D16-1235.Attachment.zip).
+Its documented test split contains 3000 verb pairs, with scores in column 4 and
+lexical-relation annotations in column 5. There is no header.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Official attachment archive | `65ffdb000166c8c3e422416c17afaf5e528c2396baa3e9ec7535713cc00a86e7` |
+| `SimVerb-3000-test.txt` | `4e689048a940833239733e91a313715a49e9ecb958cd6c98069bbd103f1a066f` |
+| Evaluating executable | `83751d090746d682ed83b64622bc3957017ade010761cc7c5fcf264fd317a601` |
+| Frozen representation probe executable | `48ea988fc38f9dc782d7199bd740b9a4e5a9499e0fcf26cddf4895cd3c06c8d6` |
+
+Corpus and model identities are the same as in the preceding WikiText-2 record.
+The normalized corpus digest is
+`9892d794469ba8ff55707523820bedb6c8a6e462ec4cd333d9aece91cdd17c69`.
+All six models cover the same 2381 pairs, or 79.3667% of the test set. The other
+619 pairs remain explicitly missing; they are not assigned zero scores.
+
+| Training seed | Reference SOM Spearman | Distributional Spearman | Difference | Descriptive 95% pair-bootstrap interval for difference |
+| --- | ---: | ---: | ---: | --- |
+| 1 | -0.009760 | 0.003263 | 0.013023 | [-0.036994, 0.060376] |
+| 42 | 0.006532 | -0.013573 | -0.020104 | [-0.067939, 0.026649] |
+| 123 | 0.001478 | 0.009643 | 0.008165 | [-0.035852, 0.056531] |
+| Median across seeds | 0.001478 | 0.003263 | | |
+
+Intervals use 2000 pair resamples and bootstrap seed 42, as in
+`scripts/compare_quality.py`. Shared words violate pair independence; these
+intervals do not establish population-level uncertainty or domain transfer.
+The results do not establish a useful verb-similarity improvement.
+
+### Locating the loss before binary encoding
+
+An isolated diagnostic harness copied the current corpus, feature and spectral
+modules. Its sole change to feature construction was an observation callback
+before projection; it did not modify weights. The harness used dependency
+versions from the root lockfile. A first, unused harness build resolved a fresh
+dependency graph; it was replaced with the pinned build before any representation
+measurements. The project lockfile and production executable were unchanged.
+
+The probe recovered the word vectors and independently computed pairwise cosine
+using binary64 accumulation. It verified the normalized corpus hash and
+recreated the Gaussian feature ranking for 65 deterministically spaced words
+per seed, exactly matching their stored bit positions. This validates the
+diagnostic alignment on those words. It is not an independent numerical oracle
+for feature construction, and it is not an exhaustive re-encoding check.
+
+| Seed | Raw PPMI | Dense spectral, whitened | Final bitmap | Dense/bitmap rank agreement |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | -0.002096 | 0.008803 | 0.003263 | 0.882311 |
+| 42 | -0.002096 | 0.002636 | -0.013573 | 0.891827 |
+| 123 | -0.002096 | 0.021957 | 0.009643 | 0.886534 |
+
+All values are Spearman correlations on the same 2381 pairs. Raw PPMI is
+deterministic and is repeated to show the stage comparison at each seed.
+The final bitmap retains much of the dense pair ranking, while both are weak
+against reference labels. Failure is already present before compression;
+this does not identify whether corpus coverage, context definitions or sense
+pooling is the dominant cause.
+
+For comparison, the same diagnostic on all 961 commonly covered SimLex pairs
+gives raw PPMI `0.097161`, dense values `0.071186` to `0.126018`, and bitmap values
+`0.062398` to `0.131939`. These are **all-pair** results, not the earlier
+661-pair test subset, and must not be substituted into the preceding table of
+historical SimLex test results.
+
+### Relation, overlap and frequency diagnostics
+
+At each seed, average bitmap similarity is higher for the 86 covered antonym
+pairs than for the 213 covered synonym pairs. At seed 42 these means are
+`0.051758` and `0.047750`, respectively; average human reference scores are
+`0.894186` and `6.720282`. This is a descriptive comparison with different word
+frequencies and pair distributions, not proof that antonymy alone causes the
+ranking failure.
+
+There are 142 unordered SimVerb test pairs that also occur in the previously
+inspected SimLex dataset. Excluding them as a secondary diagnostic leaves 2244
+commonly covered pairs, with bitmap correlations `0.009402`, `-0.006827`, and
+`0.019833` at seeds 1, 42 and 123. The main result retains every test observation.
+Future experiments must treat SimVerb as inspected data after this review.
+
+Post-hoc frequency diagnostics at seed 42 also remain weak:
+
+| Minimum training count for each word | Covered pairs | Bitmap Spearman |
+| --- | ---: | ---: |
+| 2 | 2381 | -0.013573 |
+| 10 | 1467 | -0.019515 |
+| 100 | 228 | -0.062502 |
+
+These subsets change the evaluation population and are not model improvements.
+They show that this particular failure cannot be dismissed solely by excluding
+the lowest-frequency words.
+
+### Structural counterexamples and reproduction
+
+The new [semantic invariant audit](../scripts/audit_semantic_invariants.py)
+trained each backend on eight original and eight reversed three-token documents.
+All 23 word fingerprints matched between original and reversed corpora for each
+backend. `dogs chase cats` and `cats chase dogs` also produced identical nonempty
+text fingerprints. Different full model hashes correctly reflected different
+corpus provenance. The script independently checks permutation-invariant cosine,
+lossy union, unequal-cardinality cosine distance, a full-rank whitening
+counterexample and the uniform-set overlap calculation.
+It also checks the proposed signed-evidence algebra on manually canonicalized
+assertions: agreement scores `1`, explicit conflict `-1`, and missing or reversed
+argument evidence `0` with unknown support. This validates only that algebra,
+not an automatic assertion extractor or a language-quality improvement.
+
+```sh
+# Repeat for the six frozen reference/distributional model files.
+proteus evaluate -r model.retina --pairs SimVerb-3000-test.txt \
+    --score-column 4 > model-simverb.json
+
+python3 scripts/compare_quality.py reference-simverb.json \
+    distributional-simverb.json --split all --resamples 2000 --seed 42
+
+python3 scripts/audit_semantic_invariants.py --binary target/release/proteus \
+    --output target/validation/theory-reproduction
+```
+
+`target/validation/theory/` retains the frozen-model protocol, original benchmark,
+all predictions, relation/frequency summaries, stage comparisons, isolated
+representation-probe source and executable, dependency lock, hashes and command
+logs. The probe's `PROTEUS_AUDIT_PAIRS` input is a four-column TSV of dataset
+name, left word, right word and reference score. `PROTEUS_AUDIT_RAW` selects its
+raw-PPMI output, and `PROTEUS_AUDIT_COUNTS` optionally selects word counts.
+Positional arguments are retina, corpus and dense-output paths. For example:
+
+```sh
+env RAYON_NUM_THREADS=4 \
+    PROTEUS_AUDIT_PAIRS=target/validation/theory/pairs.tsv \
+    PROTEUS_AUDIT_RAW=target/validation/theory/ppmi-repeat.tsv \
+    target/validation/theory/probe-frozen-bin \
+    target/validation/quality/whitened-wiki.retina \
+    target/validation/quality/wikitext-2-documents.txt \
+    target/validation/theory/dense-repeat.tsv
+```
+
+These are local research artifacts, not additional production APIs. The host was
+macOS on Apple M4 Max with 128 GiB RAM; the representation probe used four Rayon
+workers. No runtime or memory-speed comparison is claimed. The maintained
+script was executed successfully, and documentation links and Python syntax
+were checked. No production Rust changed, so the prior full Rust test run is
+not relabeled as a new test run for this review.
+
+The resulting [theory and redesign](theory.md) records assumptions, formal
+limitations, primary sources, complexity and falsification criteria. Its proposed
+sense/relational models are unimplemented and have no measured improvement yet.
+
+## Knowledge-grounded implementation
+
+Recorded 2026-10-22, after the theory review above. This implements a separate
+`knowledge-grounded-senses-events-v1` backend. The historical review's statements
+about an unimplemented redesign refer to its reviewed revision; they do not
+relabel these later results. [The semantic contract](semantic.md) specifies
+representation, exact equations, preparation, scope and assumptions S1-S6.
+
+### Resources and experimental boundary
+
+Native training used default `SemanticConfig` (128 squared non-spatial slots,
+minimum count 2, context window 5, marginal exponent 0.75, 32 association
+coordinates, 3 examples per sense, 5-token phrase spans, prior mass 5,
+support cutoff 0.5, temperature 0.15 and sparsity cap 0.02). There is no random
+seed or SOM update count. All settings are retained in each report and model.
+
+The external lexical source was Princeton WordNet 3.0, exported through NLTK
+3.10.4: 117,659 senses, with source archive SHA-256 and the original license
+retained. Its canonical JSON SHA-256 in the native reports is
+`4cc1af3597bd051fdcbea24378106e1f0581487290bdb0b69afb1d5b862f06fc`.
+This digest hashes the native canonical serialization, not the preparation file's
+trailing newline. Source relations are knowledge inputs, not labels learned
+from either corpus. No lexical-resource/benchmark disjointness is claimed.
+
+Preparation used CPython 3.11, spaCy 3.8.16, `en_core_web_trf:3.8.0`,
+spacy-curated-transformers 0.3.1 and the MPS backend on Apple M4 Max, macOS,
+128 GiB RAM. Parser model directory SHA-256 was
+`a1c9807372c70f535d5779576cbabf6f481fb2cd71567a921d0735ec01629f4f`.
+Original paragraph text, source byte offsets, annotations and resource identities
+are stored in each retina. The preparer initially exercised `en_core_web_sm`,
+which misparsed `Dogs chase cats.` as a noun phrase; the extractor rejected that
+query. The reported final experiments use the explicitly stronger parser.
+Neither parser correctness nor contextual sense accuracy is established by model
+size. Preparation runtime was not separately instrumented; no end-to-end timing
+or parser throughput comparison is claimed.
+
+| Corpus | Original UTF-8 SHA-256 | Complete paragraphs | Retained nonempty parser tokens | Word/phrase entries | Entries with senses | Extracted events |
+| --- | --- | --- | --- | --- | --- | --- |
+| Moby-Dick | `c3f600c0dd5e400b57fe410e37e9723455f67867f28c2d26aa412a7782c8effc` | 2,814 | 209,879 | 10,375 | 9,791 | 20,074 |
+| WikiText-2 documents | `57f3eb280cfe78d8cebe3aa76d7416607845416e22464dd9709ccb487f8d7b92` | 11,669 | 1,677,390 | 43,755 | 31,077 | 159,246 |
+
+Phrase occurrences are additional targets; vocabulary count and frequency mass
+are not raw token counts. Corpus report digests hash length-prefixed canonical
+annotation records, preserving more information than a normalized word stream.
+The annotation policy differs from the old snippet tokenizer. Comparisons
+therefore assess the complete named backends, not an isolated optimizer change.
+
+These benchmarks were already inspected during the prior review or implementation
+prototyping. The following results are development diagnostics, not a newly
+preregistered untouched holdout or a claim of cross-domain generalization. No
+configuration was selected by sweeping the reported native benchmark scores.
+All rated observations, including duplicate WordSim pairs, were retained. Native
+WikiText best-pair and expected-score correlations agree with an independent
+SciPy 1.17.1 calculation to absolute error below `1e-12` (dimensionless).
+
+### Matched-coverage lexical results
+
+Spearman correlations use average ranks for ties. WikiText reference/angular
+columns are medians of archived seeds 1, 42 and 123, each compared on the same
+common observations with the grounded model. Moby-Dick has one archived seed.
+All rows use the complete supplied benchmark, rather than mixing the previous
+hash test subset with all-pair results.
+
+| Corpus / task | Common observations / total | Reference SOM | Angular | Grounded best-sense |
+| --- | --- | --- | --- | --- |
+| WikiText / SimLex-999 | 961 / 999 | 0.0216 | 0.1167 | 0.4968 |
+| WikiText / SimVerb-3000 | 2,380 / 3,000 | 0.0019 | 0.0033 | 0.4290 |
+| WikiText / WordSim-353 | 329 / 353 | 0.2813 | 0.3667 | 0.3667 |
+| Moby-Dick / SimLex-999 | 522 / 999 | -0.0213 | 0.0482 | 0.4796 |
+| Moby-Dick / WordSim-353 | 129 / 353 | 0.1722 | 0.1685 | 0.4741 |
+
+Grounded-only coverage is 525/999 for Moby-Dick SimLex and 130/353 for its
+WordSim; their full-covered correlations are 0.4815 and 0.4707. The table uses
+522 and 129 common observations instead. Moby-Dick SimVerb covers 1,270/3,000
+with correlation 0.4430; no matched archived Moby-Dick SimVerb baseline is
+claimed. WikiText has one fewer covered SimVerb pair than the prior encoder;
+the table recomputes every baseline on the 2,380 common pairs.
+
+The maintained comparison script used 2,000 paired resamples, seed 42, `--split
+all`. For the seed-42 angular comparison, descriptive 95% percentile intervals
+for the correlation difference were [0.2878, 0.4382] on WikiText SimLex,
+[0.3901, 0.4910] on SimVerb, and [-0.1341, 0.1396] on WordSim. Shared words and
+source-resource dependence limit inferential interpretation. WordSim shows no
+clear gain over angular codes; it is not omitted because the result is weaker.
+
+### Score ablations and attribution
+
+The following WikiText rows have identical covered observations within each
+column. Each channel is explicitly selected on the same saved model:
+
+| Score | SimLex, 961 pairs | SimVerb, 2,380 pairs | WordSim, 329 pairs |
+| --- | --- | --- | --- |
+| Best lexical sense pair | 0.4968 | 0.4290 | 0.3667 |
+| Prior-weighted expected similarity | 0.2570 | 0.4135 | 0.3541 |
+| Corpus-only local PPMI association | 0.0421 | 0.0463 | 0.3012 |
+
+These results attribute most context-free lexical improvement to retained
+external sense/taxonomy knowledge and the best-pair contract. They do not show
+that gloss adaptation learned equivalent quality from the corpus. Expected
+similarity is substantially weaker on SimLex; mixing all senses is not an
+automatic cure for rare-sense false matches. Contextual weighting has controlled
+fixtures and real-parser examples, but lacks a larger contextual benchmark here.
+
+For Moby-Dick, default `king` neighbors begin with `baron`, `kings`, `mogul`,
+`power`, `powers`, `queen`, `queens`, then named monarchs. The explanations expose
+the lexical senses behind these ties. Supplying `the king is a male sovereign
+ruler of a kingdom` shifts the list toward `kings`, `jeroboam`, `frederick`,
+`ahab`, `alfred`, `edmund`, `solomon`, `tarquin`, `xerxes`, `monarchs`. This is an
+inspectable example, not an independent accuracy metric. A synonym relation
+means explicit shared lexical sense; it does not assert interchangeability in
+every sentence. Explicit sense selection remains available.
+
+### Bound evidence and compatibility
+
+A nine-paragraph hand-authored corpus was parsed with the actual transformer,
+trained natively, saved, reloaded and queried through the CLI with five separately
+prepared queries. Relative to `Dogs chase cats.`, active and passive assertions
+scored 1, reversed roles and modal assertions scored 0/unknown, and explicit
+opposite negation scored -1/conflicted. The negative query reversed support and
+conflict correctly. `Doctors treat patients.` matched its passive paraphrase.
+The contract fixtures independently test tense, unsupported negation scope,
+one-letter identifiers, non-reusable participant assignments, Unicode ranges,
+phrases and absent lexical evidence. These probes verify the supported extraction
+patterns, not general entailment or source truth.
+
+Fresh Moby-Dick retraining produced byte-identical v5 files. Migration preserved
+those exact bytes. Loaded/mapped rankings and small-fixture migration agree.
+Current reference-model SimVerb predictions equal the archived predictions
+exactly. The archived v4 binary rejects v5 with `Unsupported retina version or
+flags`; it does not silently query the new coordinate semantics.
+
+Malformed graph cycles/references, dependency cycles, invalid UTF-8 boundaries,
+missing completion/footer checksums, excessive decoded metadata sizes, corrupted
+zlib data and mismatched metadata are rejected. Failed preparation/training/save
+attempts preserve existing destinations. Rich metadata is bounded to 1 GiB
+decoded and still allocated by mapped readers.
+
+### Cost and reproducibility record
+
+These native train/save measurements include validation and compression, but
+exclude external preparation. The two corpus jobs overlapped on the same host;
+no cross-encoder throughput comparison or extrapolated capacity is asserted.
+
+| Corpus | Wall time / s | Maximum resident set / bytes | Retina / bytes |
+| --- | --- | --- | --- |
+| Moby-Dick | 10.79 | 883,703,808 | 18,152,065 |
+| WikiText | 71.17 | 3,105,243,136 | 72,270,519 |
+
+Measured executable SHA-256:
+`81b16d1e30838d016cd3680592936b3b2d8f1c47323ad50a50a58a09cbab061e`.
+It remains archived as `target/validation/semantic/proteus-grounded-build`.
+Later CLI-only changes report the actual migration format and remove stale v4
+help text. The final executable SHA-256 is
+`5de725fcdc586e6183c0f5206b680339b9d35daeca9ce26dd932e93ceaadc0ea`;
+all three WikiText lexical evaluation reports are identical under that executable.
+Its identity and score agreement are recorded separately in the manifest. The semantic algorithms are unchanged by those messages.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Moby-Dick retina, repeated training and migrated copy | `777c1b12d164a161a06ccee01cb1ae5128b9161fbded79e19593016be70475f0` |
+| WikiText retina | `f3e370656b51a1a60d658f63ff201d1250a55170ef4948025a042ba5ea8c9d2b` |
+
+`target/validation/semantic/` retains completed annotation streams, lexical source,
+parser/source identities, configuration reports, all predictions for three score
+channels, all-seed comparisons, resample intervals, source/binary/model hashes,
+commands, timing logs, real-parser probe outputs and environment identity in
+`manifest.json`. Benchmark hashes are recorded in each native evaluation JSON.
+These large local artifacts are ignored by Git; preparation and evaluation
+commands are maintained in the source and guides.
+
+The full locked Rust suite passed: 219 unit/integration tests and 95 doctests,
+with 6 existing explicit skips. All 11 new semantic contract tests passed again
+after query error hardening. Three Python preparation tests, scoped Rustfmt,
+Black, all-feature compilation, local documentation links and whitespace checks
+passed. Clippy completed with existing findings in older/vendored code; new
+semantic modules and their tests have no remaining findings. No Rust GPU runtime
+was exercised; actual MPS execution was confined to explicit Python preparation.
+
+Quality gates distinguish exact numerical fixtures, empirical word metrics,
+resource attribution, role/negation probes, deterministic persistence, legacy
+compatibility and formatting. The remaining scientific limits are larger-domain
+sense/event accuracy, rare-sense false matches, parser dependence, lexical/domain
+coverage and in-memory costs. No universal semantic accuracy, calibrated
+confidence or novel learning breakthrough is claimed.

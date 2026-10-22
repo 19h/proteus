@@ -8,6 +8,8 @@
 cargo +nightly test
 cargo +nightly test --test training_contract
 cargo +nightly test --test rebase_compat
+cargo +nightly test --test semantic_contract
+python3 -m unittest discover -s tests -p test_prepare_semantic.py
 cargo +nightly test --test cli
 cargo +nightly test --test integration_tests
 cargo +nightly test --doc
@@ -22,6 +24,8 @@ the recorded validation does not claim a warning-free tree.
 | --- | --- |
 | [`training_contract.rs`](../tests/training_contract.rs) | Scalar numerical oracle, schedules, topology, final assignment, reproducibility, corpus boundaries and malformed inputs |
 | [`rebase_compat.rs`](../tests/rebase_compat.rs) | Legacy file variants, metadata preservation and mapped search compatibility |
+| [`semantic_contract.rs`](../tests/semantic_contract.rs) | Independent taxonomy/sense fixtures, voice/role/polarity/scope, phrases, coverage, compressed v5 corruption, atomic CLI failure and loaded/mapped migration |
+| [`test_prepare_semantic.py`](../tests/test_prepare_semantic.py) | Standard-library tests for original UTF-8 offsets, deterministic resource hashing and atomic preparation |
 | [`quality_contract.rs`](../tests/quality_contract.rs) | Feature modes, spectral projection, parameter validation and reader reproducibility |
 | [`cli.rs`](../tests/cli.rs) | Process-level training, saving, reload queries, argument and input failures |
 | [`integration_tests.rs`](../tests/integration_tests.rs) | End-to-end library composition |
@@ -54,6 +58,15 @@ Labelled evaluation is provided by `proteus evaluate`; paired comparisons use
 [quality guide](quality.md#evaluate-a-model) specifies schemas, split assignment,
 coverage handling and resampling limits. Keep failed comparisons in the
 validation record; do not choose defaults from a repeatedly inspected test set.
+
+[Grounded model preparation](semantic.md#prepare-train-and-inspect) has an explicit
+Python/model installation step. Unit tests use synthetic dependency oracles;
+real-parser probes and corpus metrics are distinct evidence in the validation
+record. Run Cargo commands sequentially through doctests: the local test wrapper
+can remove an `.rlib` if another Cargo command overlaps doctest compilation.
+Scope formatting to owned files using `rustfmt +nightly --edition 2021 --config
+skip_children=true PATH...`; avoid restyling vendored modules. Preparation code
+uses four spaces and is checked with Black.
 
 ## Contributing and documentation
 

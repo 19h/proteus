@@ -112,6 +112,30 @@ The [quality guide](quality.md) gives the equations, limitations, and evaluation
 protocol. This command is a separate distributional representation, not a claim
 to reproduce the context-map architecture or a proprietary retina.
 
+## Knowledge-grounded training and queries
+
+[The semantic guide](semantic.md#prepare-train-and-inspect) gives the complete
+preparation and training workflow, resource installation and configuration table.
+These are native `proteus semantic` subcommands:
+
+| Subcommand | Required arguments | Optional query controls |
+| --- | --- | --- |
+| `train` | `-i ANNOTATIONS --lexicon JSON -o RETINA` | All [grounded training settings](semantic.md#configuration-fingerprints-and-persistence); `-i -` reads stdin |
+| `senses` | `-r RETINA WORD` | `--context TEXT`, `--sense ID` |
+| `similar` | `-r RETINA WORD` | `--relation similarity`, `--context TEXT`, `--sense ID`, `-k 10` |
+| `score` | `-r RETINA LEFT RIGHT` | `--relation similarity`, `--context TEXT`, `--sense ID` |
+| `search` | `-r RETINA --query ANNOTATIONS` | `-k 10`, `--conflict-penalty 1` |
+| `evaluate` | `-r RETINA --pairs TSV` | `--score-column 3`, `--header`, `--relation similarity` |
+| `events` | `-r RETINA` | `--document ID`, `-k 20` |
+
+Outputs are JSON, including nullable pair scores and explicit evidence states.
+Search queries require one complete annotated document. Relation names and exact
+score meanings are specified in the [word-score contract](semantic.md#word-scores-and-sense-evidence).
+These commands reject legacy models lacking semantic metadata. Ordinary `similar`
+and `evaluate` dispatch to the stored graph score for grounded models; `info`
+prints the semantic report. Generic bitmap lookup/composition remain bitmap
+operations. `semantic-lookup` rejects both angular and grounded non-spatial grids.
+
 ## Query and inspection commands
 
 | Command | Inputs / options | Result |

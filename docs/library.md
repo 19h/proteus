@@ -91,10 +91,51 @@ For numerical vectors, `SomTrainer::train_vectors` takes a mutable `Som`,
 `train`/`train_fast` are compatibility adapters. `WordEmbeddings` is the legacy
 random-indexing adapter, not a skip-gram model or the corpus trainer.
 
+## Knowledge-grounded API
+
+`proteus::semantic::{train_semantic, Lexicon, SemanticConfig}` accepts a complete
+annotated JSONL reader and an explicit validated lexical graph. It returns a
+`Retina` and `SemanticReport`. `Retina::semantic_model()` exposes immutable
+resource, entry, document and event accessors plus these query methods:
+
+```rust,no_run
+use proteus::{Result, Retina};
+use proteus::semantic::{Relation, WordQuery};
+
+fn main() -> Result<()> {
+    let retina = Retina::load("grounded.retina")?;
+    let model = retina.semantic_model().expect("grounded model");
+    let query = WordQuery {
+        word: "bank",
+        context: Some("money loans and finance"),
+        sense: None,
+    };
+    let senses = model.explain_senses(query)?;
+    let matches = model.find_similar(query, Relation::Similarity, 10)?;
+    println!("{} senses; {} matches", senses.len(), matches.len());
+    Ok(())
+}
+```
+
+`score`/`similarity` return `None` for unavailable relation evidence, distinct
+from zero. `search_evidence` accepts one validated `AnnotatedDocument`, a result
+count and nonnegative conflict penalty. `read_annotated_corpus` checks completion
+records and byte ranges. Direct serde consumers must call `SemanticModel::validate`
+before treating deserialized data as a valid model; retina readers/setters do so.
+[The semantic contract](semantic.md) defines all equations and supported patterns.
+
+`Retina::{word_similarity,find_similar_words}` and mapped `find_similar` dispatch
+to graph similarity for v5 models. `text_similarity`, `fingerprint_text`, SDR
+algebra, analogy and topic segmentation continue to pool bitmaps. They do not
+inherit event binding or contradiction handling from the explicit evidence API.
+The rich model is retained through saving/migration; mapped reads also allocate
+its metadata and graph. `has_spatial_topology()` is false for grounded models.
+
 ## Configuration ownership
 
 | Type | Controls | Boundary |
 | --- | --- | --- |
+| `SemanticConfig` | Lexical/corpus sense evidence, association windows, phrase spans and non-spatial fingerprint caps | `train_semantic`; persists the lexical graph, complete annotations and event extraction contract |
 | `TrainingConfig` | Corpus records, snippets, features and component configurations | Main entry point for `train_corpus`; sets the SOM vector dimension from features |
 | `SomConfig` | Grid, topology, update count, schedules, seed and threads | Changing `dimension` in Rust does not automatically change `initial_radius` |
 | `TextConfig` | Case, NFD normalization, ASCII punctuation, numeric filtering, token byte lengths | Defaults retain numbers; byte lengths are not Unicode character counts |

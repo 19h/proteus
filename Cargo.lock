@@ -2475,6 +2475,7 @@ dependencies = [
  "clap",
  "criterion",
  "env_logger",
+ "flate2",
  "futures-intrusive",
  "half",
  "hf-hub",

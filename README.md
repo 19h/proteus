@@ -9,6 +9,11 @@ It is an independent implementation of the published context-map architecture,
 with explicit numerical choices. It does not reproduce Cortical.io's proprietary
 training implementation or distribute its pretrained retinas.
 
+For typed lexical relevance, contextual senses and role-aware evidence search,
+use the new [knowledge-grounded backend](docs/semantic.md). It retains an explicit
+lexical graph and source evidence; its gains use external WordNet knowledge.
+The reference SOM and distributional encoders remain separately available.
+
 ## Start with a corpus
 
 Build with nightly Rust, then train a small model from your own UTF-8 text:
@@ -38,6 +43,7 @@ splitter uses ONNX Runtime and may download its model when invoked. See the
 | Surface | Available behavior | Detail |
 | --- | --- | --- |
 | Corpus training | Bounded snippets, TF-IDF, optional seeded projection, online SOM and final word/cell folding | [Algorithm](docs/algorithm.md#contexts-and-features) |
+| Knowledge-grounded training | Explicit senses, typed lexical relations, contextual weights and attributed event search | [Semantic backend](docs/semantic.md) |
 | Distributional training | Local PPMI, spectral projection and non-spatial sparse angular codes | [Quality](docs/quality.md#non-spatial-distributional-retinas) |
 | Fingerprints | Roaring-backed SDRs, word/text composition, cosine, Jaccard and overlap measures | [Library](docs/library.md#sdrs-and-semantic-operations) |
 | Search | Exact cosine ranking, inverted index, cell and spatial neighbourhood lookup | [Queries](docs/cli.md#query-and-inspection-commands) |
@@ -55,6 +61,7 @@ there is no separate `docs/README.md`.
 
 ### Build and use
 
+- [Knowledge-grounded retinas](docs/semantic.md) - preparation, training, typed scores, evidence search, assumptions and costs.
 - [Build and CLI](docs/cli.md) - installation, all commands, training options and troubleshooting.
 - [Training configuration](docs/cli.md#training-configuration) - defaults, input boundaries, update counts and projection.
 - [Segmentation and images](docs/cli.md#segmentation-and-images) - sentence/topic splitting and word or segment PNGs.
@@ -68,6 +75,7 @@ there is no separate `docs/README.md`.
 - [Development](docs/development.md) - test targets, measurement, contribution and documentation conventions.
 - [Agent engineering guide](AGENTS.md) - repository contracts, validation and required documentation upkeep.
 - [Quality and evaluation](docs/quality.md) - encoder choices, support diagnostics and labelled comparisons.
+- [Semantic theory review](docs/theory.md) - information-loss proofs, independent verb evaluation and the rationale for the implemented redesign.
 - [Validation record](docs/validation.md) - exercised boundaries, corpus results and historical binary provenance.
 - [Scaling and cross-lingual research](docs/roadmap.md) - condensed roadmap, dependencies and falsification probes.
 
@@ -89,7 +97,8 @@ this is not a terabyte-scale streaming or distributed trainer. The
 [cost model](docs/algorithm.md#cost-and-bounded-extensions) describes how grid,
 feature dimension and update count affect work and memory.
 
-Seeded training is reproducible on the same numerical platform. Search uses
+Seeded training is reproducible on the same numerical platform. Reference and distributional word search use binary cosine; grounded word search
+uses its persisted lexical graph. Search uses
 lexical tie-breaking and no hidden stopword/word-length filter. These properties
 do not establish held-out semantic accuracy. Projection, low word support and
 corpus coverage affect neighbours; [recorded results](docs/validation.md#corpus-execution)
@@ -105,6 +114,7 @@ and the [explanation of the training changes](docs/algorithm.md#online-som).
 cargo +nightly test
 cargo +nightly test --test training_contract
 cargo +nightly test --test rebase_compat
+cargo +nightly test --test semantic_contract
 cargo +nightly test --doc
 cargo +nightly check --all-features
 ```

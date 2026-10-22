@@ -1,0 +1,5 @@
+# Optional preparation tools, exercised with CPython 3.11.
+# Native Rust training and saved-model queries have no Python dependency.
+nltk==3.10.4
+spacy==3.8.16
+spacy-curated-transformers==0.3.1

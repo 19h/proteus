@@ -29,6 +29,11 @@ spectral, spatial-interpolation and word-map alternatives are specified in the
 [quality contract](quality.md); their empirical results do not change the
 reference equations below.
 
+The separate [knowledge-grounded algorithm](semantic.md) retains lexical senses,
+corpus-adapted weights and source-attributed event bindings. Its score equations,
+resource assumptions and complexity are specified there. It is not a change to
+the SOM equations below, and its external-knowledge gains are measured separately.
+
 ## Contexts and features
 
 The UTF-8 reader propagates all errors. Paragraph mode joins physical lines until

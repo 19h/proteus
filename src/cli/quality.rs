@@ -13,6 +13,7 @@ use std::time::Instant;
 struct EvaluationOutput {
     model_sha256: String,
     reference_sha256: String,
+    score_kind: String,
     #[serde(flatten)]
     evaluation: proteus::evaluation::EvaluationReport,
 }
@@ -23,6 +24,16 @@ pub(crate) fn evaluate_retina(
     score_column: usize,
     header: bool,
 ) -> Result<()> {
+    evaluate_retina_relation(model_path, reference_path, score_column, header, None)
+}
+
+pub(crate) fn evaluate_retina_relation(
+    model_path: PathBuf,
+    reference_path: PathBuf,
+    score_column: usize,
+    header: bool,
+    relation: Option<proteus::semantic::Relation>,
+) -> Result<()> {
     let model_sha256 = file_sha256(&model_path)?;
     let reference_sha256 = file_sha256(&reference_path)?;
     let retina = Retina::load(&model_path)?;
@@ -31,7 +42,26 @@ pub(crate) fn evaluate_retina(
         score_column,
         header,
     )?;
-    let evaluation = proteus::evaluation::evaluate_pairs(&retina, &pairs)?;
+    let evaluation = if let Some(relation) = relation {
+        let model = retina.semantic_model().ok_or_else(|| {
+            proteus::ProteusError::Config(
+                "Relation evaluation requires a knowledge-grounded retina".into(),
+            )
+        })?;
+        proteus::evaluation::evaluate_with(&pairs, |left, right| {
+            model.similarity(left, right, relation)
+        })?
+    } else {
+        proteus::evaluation::evaluate_pairs(&retina, &pairs)?
+    };
+    let score_kind = if retina.semantic_model().is_some() {
+        format!(
+            "knowledge-grounded:{:?}",
+            relation.unwrap_or(proteus::semantic::Relation::Similarity)
+        )
+    } else {
+        "binary-cosine".into()
+    };
 
     if file_sha256(&model_path)? != model_sha256
         || file_sha256(&reference_path)? != reference_sha256
@@ -43,6 +73,7 @@ pub(crate) fn evaluate_retina(
     let output = EvaluationOutput {
         model_sha256,
         reference_sha256,
+        score_kind,
         evaluation,
     };
     println!(

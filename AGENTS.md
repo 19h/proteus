@@ -250,6 +250,10 @@ Trace actual callers and feature gates for the requested behavior.
 | `src/similarity/` | Similarity measures and shared score interfaces |
 | `src/index/` | Postings, mapped postings, ANN and spatial lookup |
 | `src/storage/retina.rs` | Loaded model, query behavior and metadata access |
+| `src/semantic/mod.rs`, `src/semantic/training.rs` | Grounded config/report, validation, corpus sense adaptation and observed lexical features |
+| `src/semantic/corpus.rs`, `src/semantic/lexicon.rs` | Complete attributed annotations, resource schemas and bounded graph validation |
+| `src/semantic/relations.rs`, `src/semantic/evidence.rs` | Typed word scores, contextual senses, grammatical role binding and evidence states |
+| `src/cli/semantic.rs`, `scripts/prepare_semantic.py` | Native grounded commands and explicit external-resource preparation |
 | `src/storage/format.rs` | Serialized layout, validation, writers and mapped retina |
 | `src/segmentation/` | Regex splitting and SDR-based topic segmentation |
 | `src/accel/` | Optional GPU helpers and non-GPU stub |
@@ -502,6 +506,17 @@ For a format or metadata change:
 6. Define old-writer/new-reader and new-writer/old-reader behavior.
 7. Add compatibility fixtures and malformed-input checks.
 8. Update the CLI, architecture, library and algorithm documentation as needed.
+
+Grounded retinas use v5 compressed metadata (decoded length + zlib), with an
+explicit 1 GiB decoded bound and required semantic model. Nonsemantic writers
+remain v4. Loaded/mapped/migration paths preserve graph scores, original sources
+and annotations. Rich mapped metadata still allocates; only bitmap storage is
+mapped. `tests/semantic_contract.rs` covers these boundaries, and
+`tests/test_prepare_semantic.py` covers preparation offsets/hashes/publication.
+See [the grounded contract](docs/semantic.md) before changing extraction, scoring
+or resource schemas. Grounded exact word ranking uses the graph; legacy text
+pooling and bitmap APIs remain distinct. Never describe a lexical-resource gain
+as a corpus-only learning result.
 
 The v4 family coexists with upstream legacy index layouts and an earlier local
 metadata-only v2 layout. Version numbers alone do not disambiguate every legacy
@@ -854,6 +869,8 @@ docs/
   development.md                  tests, evaluation and contribution workflow
   validation.md                   revisioned records of exercised evidence
   quality.md                      alternative encoders, diagnostics and evaluation contracts
+  theory.md                       historical semantic theory review and redesign rationale
+  semantic.md                     implemented grounded senses, typed relations, evidence and resources
   roadmap.md                      unimplemented directions and research probes
 ```
 

@@ -30,6 +30,7 @@ pub struct Retina {
     text_config: TextConfig,
     training_report: Option<TrainingReport>,
     angular_report: Option<crate::training::angular::AngularReport>,
+    semantic_model: Option<crate::semantic::SemanticModel>,
 }
 
 impl Retina {
@@ -54,6 +55,7 @@ impl Retina {
             text_config: TextConfig::default(),
             training_report: None,
             angular_report: None,
+            semantic_model: None,
         }
     }
 
@@ -81,6 +83,7 @@ impl Retina {
             text_config: TextConfig::default(),
             training_report: None,
             angular_report: None,
+            semantic_model: None,
         }
     }
 
@@ -91,6 +94,7 @@ impl Retina {
         retina.text_config = metadata.text_config;
         retina.training_report = metadata.training_report;
         retina.angular_report = metadata.angular_report;
+        retina.semantic_model = metadata.semantic_model;
         retina.inverted_index = index;
         if retina.inverted_index.is_none() {
             retina.build_index();
@@ -114,6 +118,7 @@ impl Retina {
                 text_config: self.text_config.clone(),
                 training_report: self.training_report.clone(),
                 angular_report: self.angular_report.clone(),
+                semantic_model: self.semantic_model.clone(),
                 word_metadata: Default::default(),
             },
             self.inverted_index.as_ref(),
@@ -130,6 +135,7 @@ impl Retina {
         self.text_config = report.config.text.clone();
         self.training_report = Some(report);
         self.angular_report = None;
+        self.semantic_model = None;
     }
 
     /// Provenance for a non-spatial angular retina, when present.
@@ -142,15 +148,47 @@ impl Retina {
         self.text_config = report.config.text.clone();
         self.angular_report = Some(report);
         self.training_report = None;
+        self.semantic_model = None;
+    }
+
+    /// Bound senses, typed relations and attributed event evidence, if present.
+    pub fn semantic_model(&self) -> Option<&crate::semantic::SemanticModel> {
+        self.semantic_model.as_ref()
+    }
+
+    /// Attach validated semantics. Version 5 prevents older readers from silently
+    /// replacing relation scores with bitmap cosine.
+    pub fn set_semantic_model(&mut self, model: crate::semantic::SemanticModel) -> Result<()> {
+        model.validate()?;
+        if model.report.config.dimension != self.dimension as usize
+            || model.report.config.fingerprint != self.config
+            || model.entries.len() != self.word_fingerprinter.len()
+            || model
+                .entries
+                .keys()
+                .any(|word| !self.word_fingerprinter.contains(word))
+        {
+            return Err(ProteusError::Config(
+                "Semantic model and fingerprints differ".into(),
+            ));
+        }
+        self.text_config = model.report.config.text.clone();
+        self.training_report = None;
+        self.angular_report = None;
+        self.semantic_model = Some(model);
+        Ok(())
     }
 
     /// Whether neighboring bit positions represent learned spatial neighbors.
     /// Legacy models retain their original spatial interpretation.
     pub fn has_spatial_topology(&self) -> bool {
-        self.angular_report.is_none()
+        self.angular_report.is_none() && self.semantic_model.is_none()
     }
 
     fn normalize_word(&self, word: &str) -> Option<String> {
+        if let Some(model) = &self.semantic_model {
+            return model.normalize(word);
+        }
         let tokens = crate::Tokenizer::new(self.text_config.clone()).tokenize_to_strings(word);
         if tokens.len() == 1 {
             tokens.into_iter().next()
@@ -209,6 +247,15 @@ impl Retina {
 
     /// Computes similarity between two words.
     pub fn word_similarity(&self, word1: &str, word2: &str) -> Result<f64> {
+        if let Some(model) = &self.semantic_model {
+            return model
+                .similarity(word1, word2, crate::semantic::Relation::Similarity)?
+                .ok_or_else(|| {
+                    ProteusError::WordNotFound(format!(
+                        "{word1} / {word2} (lexical evidence unavailable)"
+                    ))
+                });
+        }
         let word1 = self
             .normalize_word(word1)
             .ok_or_else(|| ProteusError::WordNotFound(word1.into()))?;
@@ -227,6 +274,17 @@ impl Retina {
 
     /// Finds words similar to a given word.
     pub fn find_similar_words(&self, word: &str, k: usize) -> Result<Vec<(String, f64)>> {
+        if let Some(model) = &self.semantic_model {
+            return Ok(model
+                .find_similar(
+                    crate::semantic::WordQuery::new(word),
+                    crate::semantic::Relation::Similarity,
+                    k,
+                )?
+                .into_iter()
+                .map(|result| (result.word, result.score))
+                .collect());
+        }
         let normalized = self
             .normalize_word(word)
             .ok_or_else(|| ProteusError::WordNotFound(word.into()))?;

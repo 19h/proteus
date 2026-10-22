@@ -2,10 +2,23 @@
 
 [Documentation index](../README.md#documentation) · [Architecture](architecture.md)
 
-This page condenses the original scaling and multilingual roadmap. The entries
-below are research directions, not implemented services or delivery commitments.
-The current CLI trains one in-memory corpus model; it has no distributed trainer,
-multilingual model container, language router or REST server.
+This page condenses the original scaling and multilingual roadmap and separates
+the implemented grounded foundation from remaining research directions. The
+research entries are not services or delivery commitments. The current CLI trains
+one in-memory corpus model; it has no distributed trainer, multilingual model
+container, language router or REST server.
+
+## Semantic representation redesign
+
+The [theory review](theory.md#proposed-architecture) gives priority to typed
+relations, contextual senses and explicit equivalence/contrast supervision,
+followed by sparse candidate retrieval with richer reranking. It includes
+information-loss counterexamples, an independent verb benchmark, costs and
+falsification criteria. The [grounded implementation](semantic.md) now provides typed relations,
+context-conditioned sense weights, inspectable examples and bound evidence search.
+It uses explicit WordNet knowledge and parser annotations. Contrastive semantic
+learning, contextual calibration, a validated sparse retrieval cascade and
+large-domain entailment remain research proposals.
 
 ## Scaling beyond memory
 

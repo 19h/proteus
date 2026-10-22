@@ -6,6 +6,8 @@ Deterministic training and exact retrieval do not establish semantic accuracy.
 The quality pipeline separates the evidence used to construct fingerprints from
 the labelled pairs used to evaluate their rankings. See the
 [measured results and limits](validation.md#final-distributional-backend-and-broader-corpus-comparison).
+The [theory review](theory.md) examines structural information loss and a fresh
+verb benchmark; it separates proposed semantic improvements from these encoders.
 
 ## Spatial evidence folding
 
@@ -158,6 +160,20 @@ count, without inventing SOM updates or quantization errors. The algorithm ID is
 `distributional-ppmi-spectral-angular-v2`. A word vector averages its contexts;
 distinct senses and synonym-versus-antonym relations remain limitations.
 
+## Knowledge-grounded relations and evidence
+
+The [grounded backend](semantic.md) implements explicit sense graphs, typed
+relations, corpus-adapted priors and attributed event search. Its similarity
+score uses lexical knowledge; its association score uses corpus PPMI. Exposing
+these separately prevents association gains from being relabeled as synonym
+accuracy. Contextual weights and source examples remain inspectable.
+
+[The implementation validation](validation.md#knowledge-grounded-implementation)
+reports matched-coverage comparisons, score ablations and real-parser probes.
+Best-sense scores, expected scores and event support are different contracts;
+none is a calibrated truth or equivalence probability. Sparse ancestor features
+are used as bitmaps but do not define the exact grounded semantic score.
+
 ## Evaluate a model
 
 Supply UTF-8 tab-separated `word1`, `word2`, and finite reference score columns.
@@ -174,7 +190,10 @@ python3 scripts/compare_quality.py baseline.json candidate.json --split dev
 python3 scripts/compare_quality.py baseline.json candidate.json --split test
 ```
 
-The evaluator uses the stored tokenizer and ordinary binary cosine. CLI output
+The evaluator uses the stored tokenizer and model-specific word score: ordinary
+binary cosine for SOM/angular retinas, best-sense graph similarity for grounded
+retinas. The output declares `score_kind`; `semantic evaluate --relation NAME`
+selects an explicit grounded relation. CLI output
 also records SHA-256 hashes of both input files and rejects a detected change
 during evaluation. It reports all predictions, missing words explicitly as JSON `null`, evaluated-pair count,
 coverage, zero-similarity count and Spearman correlation with average ranks for

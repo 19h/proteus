@@ -35,6 +35,12 @@ spatial interpolation, and non-spatial angular codes are separate named choices 
 in the [quality guide](quality.md). Angular codes select Gaussian response features directly;
 they do not claim snippet-incidence or spatial-neighborhood semantics.
 
+A separate [knowledge-grounded path](semantic.md) combines explicit WordNet
+senses, prepared dependency annotations, corpus sense weights and bound events.
+Its word scorer uses the retained graph; evidence search uses roles and polarity.
+Hashed ancestor bitmaps are non-spatial retrieval features. Native queries load no
+neural model; optional Python preparation explicitly loads a dependency parser.
+
 ## Source ownership
 
 | Area | Source | Responsibility |
@@ -43,6 +49,9 @@ they do not claim snippet-incidence or spatial-neighborhood semantics.
 | Corpus training | [`training.rs`](../src/training.rs), [`training/corpus.rs`](../src/training/corpus.rs) | Input records, configuration, provenance and shared corpus preparation |
 | Feature encoding | [`training/features.rs`](../src/training/features.rs), [`training/spectral.rs`](../src/training/spectral.rs) | Lexical/PPMI vectors and orthogonal subspace projection |
 | Fingerprint construction | [`training/folding.rs`](../src/training/folding.rs), [`training/angular.rs`](../src/training/angular.rs) | Optional spatial interpolation and non-spatial distributional encoding |
+| Grounded model | [`semantic/mod.rs`](../src/semantic/mod.rs), [`semantic/training.rs`](../src/semantic/training.rs) | Resolved config, validation, corpus adaptation and observed ancestor features |
+| Grounded resources | [`semantic/corpus.rs`](../src/semantic/corpus.rs), [`semantic/lexicon.rs`](../src/semantic/lexicon.rs), [`prepare_semantic.py`](../scripts/prepare_semantic.py) | Complete attributed annotations, lexical graph and explicit preparation |
+| Grounded queries | [`semantic/relations.rs`](../src/semantic/relations.rs), [`semantic/evidence.rs`](../src/semantic/evidence.rs), [`cli/semantic.rs`](../src/cli/semantic.rs) | Typed scores, sense explanations, bound event matching and CLI |
 | Quality evaluation | [`evaluation.rs`](../src/evaluation.rs) | Labelled pair parsing, coverage, predictions and rank correlation |
 | Configuration | [`config.rs`](../src/config.rs) | SOM, normalization, fingerprint and legacy storage options |
 | Text | [`text/`](../src/text/) | Tokenization, normalization and sentence-model wrapper |
@@ -60,10 +69,19 @@ training path. See [advanced interfaces](advanced.md) for their metrics and use.
 
 ## Format and migration
 
-New files use format v4: a 64-byte header, JSON metadata, word index, bitmaps,
+Nonsemantic files use format v4: a 64-byte header, JSON metadata, word index, bitmaps,
 string pool, and optional persisted posting index. Metadata includes inference
 configuration, frequencies, POS tags and an optional map or angular training report.
 Canonical ordering supports same-environment byte reproducibility.
+
+Grounded files use v5 with the same indexed sections and compressed metadata:
+eight-byte little-endian decoded length followed by one zlib stream. The decoded
+JSON is bounded to 1 GiB and validated before access. It retains the lexical
+source/license, source text/annotations, events, sense weights and report.
+Semantic metadata is required in v5 and forbidden in v4; mixed trainer reports
+are rejected. Older binaries reject v5. Both loaded and mapped word rankings use
+the same graph scorer. Mapping still materializes this rich metadata and graph;
+it is not a mapped source-document store.
 
 Readers accept upstream v1, v2 (bincode index), v3 (mapped index), and the earlier
 local metadata-only v2 layout. Version, flags and offsets distinguish layouts.

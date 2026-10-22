@@ -39,6 +39,12 @@ enum Commands {
     /// Train non-spatial angular fingerprints from local distributional evidence
     TrainDistributional(cli::quality::TrainDistributionalArgs),
 
+    /// Knowledge-grounded senses, lexical relations and attributed event search
+    Semantic {
+        #[command(subcommand)]
+        command: cli::semantic::SemanticCommand,
+    },
+
     /// Evaluate labelled word pairs; emit JSON with rank correlation and coverage
     Evaluate {
         /// Retina to evaluate
@@ -137,7 +143,7 @@ enum Commands {
         #[arg(short, long)]
         input: PathBuf,
 
-        /// Output retina file (v4 with metadata and inverted index)
+        /// Output retina file (versioned metadata and inverted index)
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -263,6 +269,7 @@ fn main() {
     let result = match cli.command {
         Commands::Train(args) => train_retina(args),
         Commands::TrainDistributional(args) => cli::quality::train_distributional_retina(args),
+        Commands::Semantic { command } => cli::semantic::run(command),
         Commands::Evaluate {
             retina,
             pairs,
@@ -640,7 +647,14 @@ fn show_info(retina_path: PathBuf) -> Result<()> {
     println!("  Grid dimension: {}", retina.dimension());
     println!("  Grid size: {}", retina.grid_size());
     println!("  Vocabulary size: {}", retina.vocabulary_size());
-    if let Some(report) = retina.training_report() {
+    if let Some(model) = retina.semantic_model() {
+        println!("  Coordinates: non-spatial lexical features; relation scoring uses the retained sense graph");
+        println!(
+            "  Training: {}",
+            serde_json::to_string_pretty(&model.report())
+                .map_err(|error| proteus::ProteusError::Serialization(error.to_string()))?
+        );
+    } else if let Some(report) = retina.training_report() {
         println!(
             "  Training: {}",
             serde_json::to_string_pretty(report)
@@ -747,10 +761,16 @@ fn migrate_retina(input: PathBuf, output: PathBuf) -> Result<()> {
     let mut retina = Retina::load(&input)?;
     retina.build_index();
     retina.save(&output)?;
+    let version = if retina.semantic_model().is_some() {
+        5
+    } else {
+        4
+    };
     println!(
-        "Migrated {} to {} (format v4, metadata and persisted index)",
+        "Migrated {} to {} (format v{}, metadata and persisted index)",
         input.display(),
-        output.display()
+        output.display(),
+        version
     );
     Ok(())
 }

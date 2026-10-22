@@ -8,7 +8,7 @@
 //! +------------------+
 //! | Header (64 bytes)|
 //! +------------------+
-//! | Metadata (v4)    |
+//! | Metadata (v4/v5) |
 //! +------------------+
 //! | Word Index Table |
 //! | (variable)       |
@@ -49,7 +49,7 @@ use memmap2::{Mmap, MmapOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 
 /// Magic number for Proteus retina files.
@@ -60,6 +60,9 @@ const VERSION: u16 = 4;
 
 /// Header size in bytes.
 const HEADER_SIZE: usize = 64;
+
+/// Explicit upper bound on decoded v5 metadata, including source annotations.
+const MAX_SEMANTIC_METADATA_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Retina file header.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,9 +114,9 @@ impl RetinaHeader {
     pub fn has_mmap_index(&self) -> bool {
         self.flags & 2 != 0
     }
-    /// Version 4 metadata, or the earlier local version 2 metadata layout.
+    /// Current v4/v5 metadata, or the earlier local version 2 metadata layout.
     fn has_metadata(&self) -> bool {
-        self.version == 4 || (self.version == 2 && self.flags == 0 && self.index_offset > 64)
+        self.version >= 4 || (self.version == 2 && self.flags == 0 && self.index_offset > 64)
     }
 
     /// Writes the header to bytes.
@@ -180,7 +183,7 @@ impl RetinaHeader {
         ]);
 
         let inverted_index_offset = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
-        if !matches!(version, 1..=4)
+        if !matches!(version, 1..=5)
             || flags > 2
             || (version == 1 && flags != 0)
             || (flags == 1 && version != 2)
@@ -252,6 +255,9 @@ pub struct RetinaMetadata {
     /// Provenance for a non-spatial angular retina.
     #[serde(default)]
     pub angular_report: Option<crate::training::angular::AngularReport>,
+    /// Version 5 lexical senses, relation scores and attributed evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_model: Option<crate::semantic::SemanticModel>,
     /// Frequencies and POS tags, keyed in canonical word order.
     pub word_metadata: std::collections::BTreeMap<String, (f64, Vec<String>)>,
 }
@@ -259,6 +265,22 @@ pub struct RetinaMetadata {
 impl RetinaMetadata {
     fn validate(&self, header: &RetinaHeader) -> Result<()> {
         self.fingerprint_config.validate()?;
+        if (header.version == 5) != self.semantic_model.is_some() {
+            return Err(invalid("Semantic representation requires a version 5 file"));
+        }
+        if let Some(model) = &self.semantic_model {
+            model.validate()?;
+            if self.training_report.is_some()
+                || self.angular_report.is_some()
+                || model.report.config.dimension != header.dimension as usize
+                || model.report.config.fingerprint != self.fingerprint_config
+                || model.report.config.text != self.text_config
+                || model.entries.len() != header.num_words as usize
+                || model.entries.keys().ne(self.word_metadata.keys())
+            {
+                return Err(invalid("Semantic metadata does not match retina"));
+            }
+        }
         if self
             .word_metadata
             .values()
@@ -414,6 +436,13 @@ impl<'a> Parsed<'a> {
                 HEADER_SIZE as u64,
                 header.index_offset - HEADER_SIZE as u64,
             )?;
+            let decoded;
+            let bytes = if header.version == 5 {
+                decoded = decode_semantic_metadata(bytes)?;
+                decoded.as_slice()
+            } else {
+                bytes
+            };
             let m: RetinaMetadata = serde_json::from_slice(bytes)
                 .map_err(|e| invalid(&format!("Invalid metadata: {e}")))?;
             m.validate(&header)?;
@@ -621,8 +650,22 @@ impl RetinaFormat {
                 .word_metadata
                 .insert(word.clone(), (wf.frequency, wf.pos_tags.clone()));
         }
-        let meta = serde_json::to_vec(&metadata).map_err(|e| invalid(&e.to_string()))?;
+        let mut meta = serde_json::to_vec(&metadata).map_err(|e| invalid(&e.to_string()))?;
         let mut header = RetinaHeader::new(dimension, num_words);
+        if metadata.semantic_model.is_some() {
+            header.version = 5;
+            if meta.len() as u64 > MAX_SEMANTIC_METADATA_BYTES {
+                return Err(invalid("Semantic metadata exceeds the 1 GiB decoded limit"));
+            }
+            let mut encoder =
+                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(&meta)?;
+            let compressed = encoder.finish()?;
+            let mut envelope = Vec::with_capacity(compressed.len() + 8);
+            envelope.extend_from_slice(&(meta.len() as u64).to_le_bytes());
+            envelope.extend_from_slice(&compressed);
+            meta = envelope;
+        }
         header.index_offset = HEADER_SIZE as u64 + meta.len() as u64;
         header.fingerprint_offset =
             header.index_offset + entries.len() as u64 * IndexEntry::SIZE as u64;
@@ -745,6 +788,35 @@ impl RetinaFormat {
     }
 }
 
+fn decode_semantic_metadata(bytes: &[u8]) -> Result<Vec<u8>> {
+    let length_bytes = bytes
+        .get(..8)
+        .ok_or_else(|| invalid("Truncated semantic metadata envelope"))?;
+    let decoded_length = u64::from_le_bytes(
+        length_bytes
+            .try_into()
+            .map_err(|_| invalid("Invalid metadata length"))?,
+    );
+    if decoded_length == 0 || decoded_length > MAX_SEMANTIC_METADATA_BYTES {
+        return Err(invalid(
+            "Invalid or excessive decoded semantic metadata size",
+        ));
+    }
+    let mut decoder = flate2::read::ZlibDecoder::new(&bytes[8..]);
+    let mut decoded = Vec::new();
+    decoder
+        .by_ref()
+        .take(decoded_length + 1)
+        .read_to_end(&mut decoded)
+        .map_err(|error| invalid(&format!("Invalid compressed semantic metadata: {error}")))?;
+    if decoded.len() as u64 != decoded_length || decoder.total_in() != (bytes.len() - 8) as u64 {
+        return Err(invalid(
+            "Semantic metadata length or compressed stream boundary mismatch",
+        ));
+    }
+    Ok(decoded)
+}
+
 /// A memory-mapped retina; bitmap values are decoded on demand after validation.
 pub struct MmappedRetina {
     mmap: Mmap,
@@ -754,6 +826,7 @@ pub struct MmappedRetina {
     word_index: HashMap<String, usize>,
     text_config: crate::TextConfig,
     legacy_index: Option<InvertedIndex>,
+    semantic_model: Option<crate::semantic::SemanticModel>,
 }
 
 impl MmappedRetina {
@@ -771,6 +844,7 @@ impl MmappedRetina {
             .map(|(i, w)| (w.clone(), i))
             .collect();
         let text_config = parsed.metadata.text_config;
+        let semantic_model = parsed.metadata.semantic_model;
         let legacy_index = if parsed.header.has_inverted_index() {
             parsed.inverted_index
         } else {
@@ -787,6 +861,7 @@ impl MmappedRetina {
             word_index,
             text_config,
             legacy_index,
+            semantic_model,
         })
     }
     /// Parsed header.
@@ -844,8 +919,24 @@ impl MmappedRetina {
     pub fn has_inverted_index(&self) -> bool {
         self.header.flags != 0
     }
-    /// Exact cosine search using all posting candidates and deterministic ties.
+    /// Exact model-specific word ranking with deterministic ties. Legacy models
+    /// use all posting candidates; grounded models score the retained graph.
     pub fn find_similar(&self, word: &str, k: usize) -> Option<Vec<(String, f64)>> {
+        if let Some(model) = &self.semantic_model {
+            return model
+                .find_similar(
+                    crate::semantic::WordQuery::new(word),
+                    crate::semantic::Relation::Similarity,
+                    k,
+                )
+                .ok()
+                .map(|results| {
+                    results
+                        .into_iter()
+                        .map(|result| (result.word, result.score))
+                        .collect()
+                });
+        }
         if !self.has_inverted_index() {
             return None;
         }
@@ -881,6 +972,11 @@ impl MmappedRetina {
         results.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         results.truncate(k);
         Some(results)
+    }
+
+    /// Decoded semantic metadata; bitmap payloads remain mapped separately.
+    pub fn semantic_model(&self) -> Option<&crate::semantic::SemanticModel> {
+        self.semantic_model.as_ref()
     }
 }
 

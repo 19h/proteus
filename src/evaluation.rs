@@ -21,7 +21,7 @@ pub struct PairPrediction {
     /// Labelled pair.
     #[serde(flatten)]
     pub pair: WordPair,
-    /// Binary cosine, or null if either normalized word is absent.
+    /// Selected model score, or null if the required word evidence is unavailable.
     pub predicted: Option<f64>,
 }
 
@@ -34,7 +34,7 @@ pub struct EvaluationReport {
     pub evaluated_pairs: usize,
     /// Fraction of input pairs evaluated; zero for an empty set.
     pub coverage: f64,
-    /// Covered pairs with exactly zero binary cosine.
+    /// Covered pairs with an exactly zero predicted score.
     pub zero_similarity_pairs: usize,
     /// Pearson correlation of average ranks. Null for fewer than two pairs or constant ranks.
     pub spearman: Option<f64>,
@@ -85,9 +85,24 @@ pub fn read_word_pairs(
     Ok(pairs)
 }
 
-/// Score all labelled pairs with the same normalization and cosine used by queries.
-/// O(P log P) time and O(P) memory for P pairs, excluding bitmap intersection cost.
+/// Score labelled pairs with the saved normalization and word score used by queries.
+/// O(P log P) time and O(P) memory for P pairs, excluding model scoring costs.
 pub fn evaluate_pairs(retina: &Retina, pairs: &[WordPair]) -> Result<EvaluationReport> {
+    evaluate_with(pairs, |left, right| {
+        match retina.word_similarity(left, right) {
+            Ok(value) => Ok(Some(value)),
+            Err(ProteusError::WordNotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    })
+}
+
+/// Evaluate a named score contract while retaining every reference observation.
+/// The scorer must return finite values or explicit missing evidence.
+pub fn evaluate_with(
+    pairs: &[WordPair],
+    mut scorer: impl FnMut(&str, &str) -> Result<Option<f64>>,
+) -> Result<EvaluationReport> {
     let mut predictions = Vec::with_capacity(pairs.len());
     let mut scores = Vec::new();
     let mut predicted_scores = Vec::new();
@@ -95,12 +110,11 @@ pub fn evaluate_pairs(retina: &Retina, pairs: &[WordPair]) -> Result<EvaluationR
         if !pair.score.is_finite() {
             return Err(ProteusError::Config("Nonfinite reference score".into()));
         }
-        let predicted = match retina.word_similarity(&pair.word1, &pair.word2) {
-            Ok(value) => Some(value),
-            Err(ProteusError::WordNotFound(_)) => None,
-            Err(error) => return Err(error),
-        };
+        let predicted = scorer(&pair.word1, &pair.word2)?;
         if let Some(value) = predicted {
+            if !value.is_finite() {
+                return Err(ProteusError::Config("Nonfinite model score".into()));
+            }
             scores.push(pair.score);
             predicted_scores.push(value);
         }
