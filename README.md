@@ -1,189 +1,122 @@
 # Proteus
 
-Proteus learns binary word fingerprints from a corpus using the published
-Semantic Folding architecture: text contexts are mapped to a two-dimensional
-self-organizing map (SOM), and each word records the cells containing its contexts.
-It is an independent implementation with explicit numerical choices, not the
-proprietary Cortical.io implementation or its pretrained models.
+Proteus is a Rust Semantic Folding engine. It learns sparse binary word
+fingerprints from a text corpus by mapping contexts onto a two-dimensional
+self-organizing map (SOM), then recording the cells associated with each word.
+Text fingerprints compose known words; shared bits support similarity search.
 
-```
-UTF-8 documents -> bounded snippets -> TF-IDF -> online SOM
-                                                    |
-                              final snippet/cell assignments
-                                                    |
-                            word/context incidence -> bitmaps
-                                                    |
-                                   exact cosine similarity
-```
+It is an independent implementation of the published context-map architecture,
+with explicit numerical choices. It does not reproduce Cortical.io's proprietary
+training implementation or distribute its pretrained retinas.
 
-[Algorithm, assumptions, equations, complexity and references](docs/algorithm.md)
-describe the implementation contract. [Validation](docs/validation.md) records the
-exercised boundaries and corpus experiment.
+## Start with a corpus
 
-## Build
-
-The vendored bitmap implementation and explicit SIMD currently require Rust
-nightly (validated with rustc 1.100.0-nightly, 2026-09-05).
+Build with nightly Rust, then train a small model from your own UTF-8 text:
 
 ```sh
 cargo +nightly build --release
-cargo +nightly test
+
+./target/release/proteus train -i corpus.txt -o english.retina \
+  -d 16 -n 10000 --seed 42
+./target/release/proteus info english.retina
+./target/release/proteus similar -r english.retina king -k 10
+./target/release/proteus fingerprint -r english.retina 'the king and queen'
 ```
 
-The binary is `target/release/proteus`. The optional neural sentence segmenter
-uses ONNX Runtime and downloads its model when invoked. Ordinary training and
-similarity queries do not download or invoke a language model. `--features gpu`
-exposes the standalone GPU helpers; the verified online training path uses CPU
-arithmetic and exhaustive BMU search.
+Blank lines separate documents; wrapped lines are joined. Add `--documents lines`
+for one independent document per line. The query word must occur in the retained
+vocabulary. A model describes the usages present in its corpus; a book-specific
+model is not a general-English synonym dictionary.
 
-## Train and query
+The build currently requires nightly `portable_simd`. Ordinary training and
+queries do not load a neural language model. The optional neural sentence
+splitter uses ONNX Runtime and may download its model when invoked. See the
+[build and CLI guide](docs/cli.md#build) for options and prerequisites.
 
-```sh
-# Reference feature representation: exact vocabulary TF-IDF.
-# Use a modest map for a small, domain-specific corpus.
-proteus train -i corpus.txt -o english.retina -d 16 -n 10000 --seed 42
-proteus similar -r english.retina king -k 10
-proteus fingerprint -r english.retina 'the king and queen'
-proteus similarity -r english.retina 'the king' 'the queen'
-proteus info english.retina
-```
+## Current project shape
 
-Blank lines delimit documents by default; physical wrapped lines are joined.
-For a corpus with one independent document per line, add `--documents lines`.
-Documents are split into nonoverlapping snippets of at most 64 normalized tokens.
-This is a deterministic token rule, not sentence detection. Smaller or larger
-contexts change the association being learned.
-
-Exact vocabulary TF-IDF can require substantial memory and compute. A named,
-opt-in approximation reduces vector dimension:
-
-```sh
-proteus train -i corpus.txt -o compact.retina -d 32 -n 10000 \
-  --projection-dim 256 --seed 42
-```
-
-Projection can change neighbours. Evaluate it against exact features for the
-application; it does not provide a fixed accuracy guarantee.
-
-`-n` now means exactly the requested number of online SOM updates. It does not
-mean tokens, epochs or examples retained. A final frozen-map assignment pass
-always maps every usable context, even when `-n` is smaller than the corpus.
-A value such as `100000000` performs one hundred million updates and can be
-very expensive. It cannot compensate for missing or unrepresentative contexts.
-
-## Why the previous results varied
-
-The previous query implementation sampled hash-map entries to classify
-stopwords, so results could change when loading the same file. Its fast training
-path also ignored the requested iteration count, used stale precomputed BMUs,
-and could index beyond small training sets. Seeded projections depended on
-unordered vocabulary iteration; ties had no deterministic ordering. Saved files
-discarded frequencies and configuration.
-
-Queries now apply exact cosine ranking with lexical tie-breaking and no hidden
-word-length or stopword filters. Training uses current BMUs, configured schedules,
-unique toroidal updates and final-map assignments. Seeded runs are reproducible
-on the same numerical platform. New files retain configuration, frequency,
-training diagnostics and a digest of the normalized context data.
-
-Old `.retina` files remain readable, with unknown provenance displayed by `info`.
-Loading one does not repair its learned geometry: retrain to use the new pipeline.
-A book-specific model describes that book's usages; general-English synonym
-quality is a separate empirical question. The implementation does not promise
-that `king` retrieves `queen` from every corpus.
-
-## Exposed training parameters
-
-Run `proteus train --help` for the full interface.
-
-| Parameter | Default | Meaning |
+| Surface | Available behavior | Detail |
 | --- | --- | --- |
-| `--dimension`, `-d` | 128 | Grid side; total cells are its square |
-| `--iterations`, `-n` | 100000 | Online updates |
-| `--seed`, `-s` | 42 | Recorded deterministic random seed |
-| `--documents` | paragraphs | `paragraphs` or `lines` |
-| `--snippet-tokens` | 64 | Maximum normalized tokens per context |
-| `--min-count` | 2 | Minimum corpus token count for retained words |
-| `--max-document-frequency` | 0.5 | Maximum snippet fraction for TF-IDF features |
-| `--projection-dim` | 0 | Zero means exact; positive enables projection |
-| `--initial-learning-rate` | 0.1 | Initial online update coefficient |
-| `--final-learning-rate` | 0.01 | Final online update coefficient |
-| `--initial-radius` | dimension/2 | Initial Gaussian width in cells |
-| `--final-radius` | 1 | Final Gaussian width in cells |
-| `--planar` | false | Disable toroidal wrapping |
-| `--threads` | 0 | Rayon worker count; zero uses its default |
-| `--sparsity` | 0.02 | Maximum fingerprint fraction, rounded up to a cell |
-| `--max-active-bits` | no extra cap | Additional absolute cardinality limit |
+| Corpus training | Bounded snippets, TF-IDF, optional seeded projection, online SOM and final word/cell folding | [Algorithm](docs/algorithm.md#contexts-and-features) |
+| Fingerprints | Roaring-backed SDRs, word/text composition, cosine, Jaccard and overlap measures | [Library](docs/library.md#sdrs-and-semantic-operations) |
+| Search | Exact cosine ranking, inverted index, cell and spatial neighbourhood lookup | [Queries](docs/cli.md#query-and-inspection-commands) |
+| Persistence | Versioned retina files, metadata, atomic saves, validated mapped reads and legacy readers | [Format](docs/architecture.md#format-and-migration) |
+| Text and visualization | Regex/neural sentence splitting, SDR-based topic segmentation and PNG fingerprints | [Segmentation and images](docs/cli.md#segmentation-and-images) |
+| Additional library algorithms | HNSW, LSH, product quantization, batch/growing SOM and HDC | [Advanced APIs](docs/advanced.md) |
 
-No random padding fills a low-support word to the density limit. Rare words may
-have very few bits. Higher density, a different snippet rule, or a different map
-size changes the representation and requires retraining.
+These are distinct interfaces. Approximate indexes, the batch trainer and GPU
+helpers do not replace the reference online trainer or exact cosine query path.
 
-## Library
+## Documentation
 
-```rust
-use proteus::training::{train_corpus, TrainingConfig};
-use std::{fs::File, io::BufReader};
+This README is the documentation entry point. Focused pages link back here;
+there is no separate `docs/README.md`.
 
-fn main() -> proteus::Result<()> {
-    let mut config = TrainingConfig::default();
-    config.som.dimension = 16;
-    config.som.initial_radius = 8.0;
-    config.som.iterations = 1000;
-    let (retina, report) = train_corpus(
-        BufReader::new(File::open("corpus.txt")?), config, |_, _| {}
-    )?;
-    retina.save("english.retina")?;
-    println!("{} words; error {}", report.vocabulary, report.quantization_error);
-    Ok(())
-}
+### Build and use
+
+- [Build and CLI](docs/cli.md) - installation, all commands, training options and troubleshooting.
+- [Training configuration](docs/cli.md#training-configuration) - defaults, input boundaries, update counts and projection.
+- [Segmentation and images](docs/cli.md#segmentation-and-images) - sentence/topic splitting and word or segment PNGs.
+- [Library guide](docs/library.md) - embedding, training, querying, configuration and persistence.
+- [Advanced APIs](docs/advanced.md) - HNSW, LSH, PQ, batch SOM, HDC and their separate contracts.
+
+### Understand and develop
+
+- [Architecture](docs/architecture.md) - data flow, source ownership and format compatibility.
+- [Algorithm contract](docs/algorithm.md) - equations, precision, complexity, assumptions and primary references.
+- [Development](docs/development.md) - test targets, measurement, contribution and documentation conventions.
+- [Validation record](docs/validation.md) - exercised boundaries, corpus results and historical binary provenance.
+- [Scaling and cross-lingual research](docs/roadmap.md) - condensed roadmap, dependencies and falsification probes.
+
+## Execution and quality boundaries
+
+```text
+UTF-8 documents -> bounded snippets -> TF-IDF -> online SOM
+                                                    |
+                                         final cell assignments
+                                                    |
+                                        word incidence -> SDRs
+                                                    |
+                                           cosine similarity
 ```
 
-`SomTrainer::train_vectors` exposes the same optimizer for finite numerical
-vectors. `train` and `train_fast` remain compatibility adapters. The legacy
-`WordEmbeddings` type implements random indexing, not skip-gram, and is not used
-by `train_corpus`.
+`-n` counts online updates exactly. Every usable context is assigned to the final
+map afterward. Training keeps normalized tokens and dense vectors in memory;
+this is not a terabyte-scale streaming or distributed trainer. The
+[cost model](docs/algorithm.md#cost-and-bounded-extensions) describes how grid,
+feature dimension and update count affect work and memory.
 
-## Additional upstream interfaces
+Seeded training is reproducible on the same numerical platform. Search uses
+lexical tie-breaking and no hidden stopword/word-length filter. These properties
+do not establish held-out semantic accuracy. Projection, low word support and
+corpus coverage affect neighbours; [recorded results](docs/validation.md#corpus-execution)
+show both useful and weak associations.
 
-The rebase retains the HNSW, LSH, product-quantization and HDC APIs, the separate
-batch SOM trainer, semantic position lookup, and PNG fingerprint rendering.
-These are separate algorithms; approximate indexes and the batch trainer do not
-replace the reference online training and exact cosine-ranking path.
+Old retinas remain readable. Loading or migrating them does not repair their
+learned geometry or recover missing provenance. See [migration](docs/architecture.md#format-and-migration)
+and the [explanation of the training changes](docs/algorithm.md#online-som).
+
+## Verify a change
 
 ```sh
-# Upgrade old layouts while retaining available metadata and adding an index.
-proteus migrate -i old.retina -o indexed.retina
-proteus lookup -r indexed.retina '100,101' --combined
-proteus semantic-lookup -r indexed.retina '100,101' --explain
-proteus segment -r indexed.retina -i document.txt --fast
-proteus fingerprint-image -r indexed.retina --text 'king queen' --words -o images
+cargo +nightly test
+cargo +nightly test --test training_contract
+cargo +nightly test --test rebase_compat
+cargo +nightly test --doc
+cargo +nightly check --all-features
 ```
 
-`segment --fast` uses the upstream regex sentence splitter and does not load the
-neural model. New files use format v4 to combine metadata with a persisted index.
-Readers accept upstream v1/v2/v3 files and the earlier local metadata-only v2
-layout. Memory-mapped searches validate their file and index before access, so
-opening a file is not an O(1) operation.
+The [test map](docs/development.md#local-checks) separates numerical, compatibility
+and CLI coverage. Neural-model and large bitmap examples include explicit skips;
+compiling optional GPU code does not establish GPU runtime behavior.
 
-## Tests and limits
+## Name, attribution and license
 
-```sh
-cargo test --test training_contract
-cargo test --test integration_tests
-cargo test --doc
-cargo check --all-features
-```
+Proteus is named after the shape-changing figure in Greek mythology. The project
+builds on Semantic Folding research, SOMs, TextTiling, Roaring bitmaps, wtpsplit
+and Rayon. Primary references appear with the relevant
+[algorithm](docs/algorithm.md#primary-references) and
+[advanced APIs](docs/advanced.md#hyperdimensional-computing).
 
-The contract tests compare the online update against independent scalar
-calculations, exercise large-radius toroidal maps and final assignments, compare
-seeded model bytes, reload queries repeatedly, compare indexed and exhaustive
-search with unequal bit counts, validate malformed files and preserve legacy
-file loading. Controlled topic tests cover several seeds. These are correctness
-checks, not a substitute for a held-out semantic benchmark.
-
-The implementation keeps normalized corpus tokens and dense context vectors in
-memory. It is not a terabyte-scale streaming trainer. File sections retain
-32-bit offsets and 16-bit individual record lengths; oversized records are
-rejected. The CPU path is validated independently of the optional GPU helpers
-and neural segmentation model.
+Package metadata declares MIT licensing; see
+[attribution and license scope](docs/development.md#attribution-and-license).

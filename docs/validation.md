@@ -1,5 +1,7 @@
 # Validation record
 
+[Documentation index](../README.md#documentation) · [Development guide](development.md)
+
 Environment: macOS arm64; rustc 1.100.0-nightly (f248f4038, 2026-09-05).
 This record distinguishes algorithm correctness, execution reproducibility and
 semantic quality. It does not identify an unavailable user's training corpus.

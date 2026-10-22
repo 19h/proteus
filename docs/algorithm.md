@@ -1,5 +1,7 @@
 # Algorithm and validation contract
 
+[Documentation index](../README.md#documentation) · [Architecture](architecture.md)
+
 Proteus implements the context-map architecture described in Webber's Semantic
 Folding paper, pp. 31-32 (PDF pages 30-31). It is an independent implementation,
 not a reproduction of the proprietary Cortical.io training algorithm or retina.
