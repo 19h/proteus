@@ -24,6 +24,11 @@ Semantic-quality conclusions depend on A1-A5. Determinism depends on A6.
 The quoted user's actual corpus and retina were not present in the workspace;
 their content, version and empirical quality are unknown.
 
+The reference default remains lexical TF-IDF with raw context incidence. Named PPMI,
+spectral, spatial-interpolation and word-map alternatives are specified in the
+[quality contract](quality.md); their empirical results do not change the
+reference equations below.
+
 ## Contexts and features
 
 The UTF-8 reader propagates all errors. Paragraph mode joins physical lines until

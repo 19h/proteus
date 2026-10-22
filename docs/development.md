@@ -22,6 +22,7 @@ the recorded validation does not claim a warning-free tree.
 | --- | --- |
 | [`training_contract.rs`](../tests/training_contract.rs) | Scalar numerical oracle, schedules, topology, final assignment, reproducibility, corpus boundaries and malformed inputs |
 | [`rebase_compat.rs`](../tests/rebase_compat.rs) | Legacy file variants, metadata preservation and mapped search compatibility |
+| [`quality_contract.rs`](../tests/quality_contract.rs) | Feature modes, spectral projection, parameter validation and reader reproducibility |
 | [`cli.rs`](../tests/cli.rs) | Process-level training, saving, reload queries, argument and input failures |
 | [`integration_tests.rs`](../tests/integration_tests.rs) | End-to-end library composition |
 | Inline module tests and Rust examples | Component behavior and public usage |
@@ -47,6 +48,12 @@ Hold corpus, preprocessing, grid, update count and seed fixed when isolating a
 projection or algorithm change. Report measured time and memory together with
 held-out retrieval quality. Repeat-load agreement tests reproducibility; it is
 not an accuracy score. No dedicated benchmark target is currently checked in.
+
+Labelled evaluation is provided by `proteus evaluate`; paired comparisons use
+[`scripts/compare_quality.py`](../scripts/compare_quality.py). The
+[quality guide](quality.md#evaluate-a-model) specifies schemas, split assignment,
+coverage handling and resampling limits. Keep failed comparisons in the
+validation record; do not choose defaults from a repeatedly inspected test set.
 
 ## Contributing and documentation
 

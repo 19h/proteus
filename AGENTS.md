@@ -233,10 +233,13 @@ Trace actual callers and feature gates for the requested behavior.
 
 | Owner | Responsibility |
 | --- | --- |
-| `src/main.rs` | CLI definitions, configuration wiring, command output and image rendering |
+| `src/main.rs`, `src/cli/quality.rs` | CLI definitions, configuration wiring, quality commands and image rendering |
 | `src/lib.rs` | Public module visibility and compatibility re-exports |
 | `src/config.rs` | Shared SOM, text, fingerprint and legacy storage configuration |
-| `src/training.rs` | Corpus input, feature preparation, folding and training report |
+| `src/training.rs`, `src/training/corpus.rs` | Shared corpus input, configuration and map training report |
+| `src/training/features.rs`, `src/training/spectral.rs` | Feature construction and optional subspace projection |
+| `src/training/folding.rs`, `src/training/angular.rs` | Context-incidence and explicitly non-spatial angular fingerprint construction |
+| `src/evaluation.rs` | Labelled pair evaluation and coverage |
 | `src/som/training.rs` | Reference online optimizer, schedules and compatibility adapters |
 | `src/som/map.rs`, `src/som/neuron.rs` | Map representation, geometry and neuron weights |
 | `src/som/simd.rs` | Distance, normalization and update kernels |
@@ -850,6 +853,7 @@ docs/
   algorithm.md                    numerical contract and scientific assumptions
   development.md                  tests, evaluation and contribution workflow
   validation.md                   revisioned records of exercised evidence
+  quality.md                      alternative encoders, diagnostics and evaluation contracts
   roadmap.md                      unimplemented directions and research probes
 ```
 

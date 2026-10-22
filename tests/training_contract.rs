@@ -168,6 +168,7 @@ fn corpus_config() -> TrainingConfig {
             weighted_aggregation: true,
         },
         document_mode: DocumentMode::Lines,
+        folding: proteus::training::FoldingConfig::incidence(),
         snippet_tokens: 64,
         min_count: 1,
         max_document_frequency: 0.8,
@@ -209,9 +210,17 @@ fn topic_corpus() -> String {
 
 #[test]
 fn controlled_topics_retain_semantic_separation_across_seeds() {
-    for seed in [1, 42, 123] {
+    for (seed, folding) in [1, 42, 123].into_iter().flat_map(|seed| {
+        [
+            proteus::training::FoldingConfig::incidence(),
+            proteus::training::FoldingConfig::gaussian(),
+        ]
+        .into_iter()
+        .map(move |folding| (seed, folding))
+    }) {
         let mut config = corpus_config();
         config.som.seed = Some(seed);
+        config.folding = folding;
         let (retina, report) =
             train_corpus(Cursor::new(topic_corpus()), config, |_, _| {}).unwrap();
         assert_eq!(report.mapped_snippets, 36);
@@ -309,6 +318,7 @@ fn folding_uses_snippet_incidence_and_preserves_token_frequencies() {
             initial_radius: 1.0,
             ..config()
         },
+        folding: proteus::training::FoldingConfig::incidence(),
         min_count: 1,
         max_document_frequency: 1.0,
         fingerprint: FingerprintConfig {

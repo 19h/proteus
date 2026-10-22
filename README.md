@@ -1,6 +1,6 @@
 # Proteus
 
-Proteus is a Rust Semantic Folding engine. It learns sparse binary word
+Proteus is a Rust Semantic Folding engine. Its default trainer learns sparse binary word
 fingerprints from a text corpus by mapping contexts onto a two-dimensional
 self-organizing map (SOM), then recording the cells associated with each word.
 Text fingerprints compose known words; shared bits support similarity search.
@@ -38,6 +38,7 @@ splitter uses ONNX Runtime and may download its model when invoked. See the
 | Surface | Available behavior | Detail |
 | --- | --- | --- |
 | Corpus training | Bounded snippets, TF-IDF, optional seeded projection, online SOM and final word/cell folding | [Algorithm](docs/algorithm.md#contexts-and-features) |
+| Distributional training | Local PPMI, spectral projection and non-spatial sparse angular codes | [Quality](docs/quality.md#non-spatial-distributional-retinas) |
 | Fingerprints | Roaring-backed SDRs, word/text composition, cosine, Jaccard and overlap measures | [Library](docs/library.md#sdrs-and-semantic-operations) |
 | Search | Exact cosine ranking, inverted index, cell and spatial neighbourhood lookup | [Queries](docs/cli.md#query-and-inspection-commands) |
 | Persistence | Versioned retina files, metadata, atomic saves, validated mapped reads and legacy readers | [Format](docs/architecture.md#format-and-migration) |
@@ -66,6 +67,7 @@ there is no separate `docs/README.md`.
 - [Algorithm contract](docs/algorithm.md) - equations, precision, complexity, assumptions and primary references.
 - [Development](docs/development.md) - test targets, measurement, contribution and documentation conventions.
 - [Agent engineering guide](AGENTS.md) - repository contracts, validation and required documentation upkeep.
+- [Quality and evaluation](docs/quality.md) - encoder choices, support diagnostics and labelled comparisons.
 - [Validation record](docs/validation.md) - exercised boundaries, corpus results and historical binary provenance.
 - [Scaling and cross-lingual research](docs/roadmap.md) - condensed roadmap, dependencies and falsification probes.
 

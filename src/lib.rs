@@ -78,6 +78,7 @@
 pub mod accel;
 pub mod config;
 pub mod error;
+pub mod evaluation;
 pub mod fingerprint;
 pub mod index;
 pub mod roaring;

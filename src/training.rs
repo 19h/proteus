@@ -1,6 +1,5 @@
-//! Corpus-to-retina training: TF-IDF snippets -> SOM -> word/context incidence.
+//! Corpus-to-retina training with explicit context-map and word-map contracts.
 
-use crate::som::simd::normalize_f32;
 use crate::{
     FingerprintConfig, ProteusError, Result, Retina, Som, SomConfig, SomTrainer, TextConfig,
     Tokenizer, WordFingerprint,
@@ -8,9 +7,78 @@ use crate::{
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::io::BufRead;
+
+pub mod angular;
+mod corpus;
+mod features;
+mod folding;
+mod spectral;
+
+/// Geometry used to encode a snippet before map training.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FeatureModel {
+    /// Sublinear term frequency times smoothed inverse document frequency.
+    #[default]
+    Tfidf,
+    /// TF-IDF weighted composition of local positive-PMI word-context vectors.
+    ContextPpmi,
+}
+
+/// Reduction applied to the word-context feature matrix.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProjectionMethod {
+    /// Seeded Rademacher projection, or exact coordinates when dimension is zero.
+    #[default]
+    Random,
+    /// Approximate dominant right subspace using orthogonal power iteration.
+    Spectral,
+}
+
+/// Interpolation and background correction when folding word incidence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FoldingConfig {
+    /// Gaussian standard deviation in cells. Zero preserves raw incidence.
+    pub sigma: f64,
+    /// Divide smoothed incidence by smoothed snippet occupancy to this power.
+    pub background_exponent: f64,
+}
+
+impl FoldingConfig {
+    /// Original observed-cell-only folding, also used for old model metadata.
+    pub fn incidence() -> Self {
+        Self {
+            sigma: 0.0,
+            background_exponent: 0.0,
+        }
+    }
+
+    /// Local Gaussian interpolation with square-root occupancy correction.
+    pub fn gaussian() -> Self {
+        Self {
+            sigma: 1.0,
+            background_exponent: 0.5,
+        }
+    }
+}
+
+impl Default for FoldingConfig {
+    fn default() -> Self {
+        Self::incidence()
+    }
+}
+
+fn default_context_window() -> usize {
+    5
+}
+fn default_context_alpha() -> f64 {
+    0.75
+}
+
+fn default_projection_iterations() -> usize {
+    2
+}
 
 /// Interpretation of physical newlines in the input corpus.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,8 +107,26 @@ pub struct TrainingConfig {
     /// Exclude ubiquitous words from TF-IDF features above this document fraction.
     /// Words remain in output fingerprints if they meet `min_count`.
     pub max_document_frequency: f64,
-    /// Optional random projection dimension; zero uses exact vocabulary TF-IDF.
+    /// Projection dimension; zero preserves exact feature coordinates.
     pub projection_dim: usize,
+    /// Feature geometry; absent in legacy metadata means TF-IDF.
+    #[serde(default)]
+    pub feature_model: FeatureModel,
+    /// Maximum token distance for local PPMI, without crossing snippets.
+    #[serde(default = "default_context_window")]
+    pub context_window: usize,
+    /// Exponent smoothing the context marginal distribution for PPMI.
+    #[serde(default = "default_context_alpha")]
+    pub context_alpha: f64,
+    /// Spatial evidence aggregation; absent in legacy metadata means incidence.
+    #[serde(default = "FoldingConfig::incidence")]
+    pub folding: FoldingConfig,
+    /// Random projection or a learned word-context subspace.
+    #[serde(default)]
+    pub projection_method: ProjectionMethod,
+    /// Orthogonal power iterations for spectral projection.
+    #[serde(default = "default_projection_iterations")]
+    pub projection_iterations: usize,
 }
 
 impl Default for TrainingConfig {
@@ -57,6 +143,12 @@ impl Default for TrainingConfig {
             min_count: 2,
             max_document_frequency: 0.5,
             projection_dim: 0,
+            feature_model: FeatureModel::Tfidf,
+            context_window: default_context_window(),
+            context_alpha: default_context_alpha(),
+            folding: FoldingConfig::default(),
+            projection_method: ProjectionMethod::Random,
+            projection_iterations: default_projection_iterations(),
         }
     }
 }
@@ -72,16 +164,34 @@ pub struct TrainingReport {
     pub config: TrainingConfig,
     /// Number of extracted snippets before zero-feature filtering.
     pub snippets: usize,
-    /// Snippets that supplied finite nonzero vectors.
+    /// Snippets assigned in context-map mode; zero in word-map mode.
     pub mapped_snippets: usize,
     /// Retained output words.
     pub vocabulary: usize,
-    /// Number of vocabulary TF-IDF features before optional projection.
+    /// Number of context features before optional projection.
     pub features: usize,
-    /// Distinct cells occupied by final snippet BMUs.
+    /// Distinct cells occupied by final sample BMUs.
     pub occupied_cells: usize,
-    /// Mean Euclidean distance from snippet vectors to final prototypes.
+    /// Mean Euclidean distance from training vectors to their final prototypes.
     pub quantization_error: f64,
+    /// Support and compression diagnostics; absent in older training reports.
+    #[serde(default)]
+    pub quality: Option<QualityDiagnostics>,
+}
+
+/// Observable evidence limits, distinct from labelled semantic accuracy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QualityDiagnostics {
+    /// Words observed in only one usable snippet, regardless of token repetition.
+    pub single_context_words: usize,
+    /// Number of output words minus the number of distinct bit patterns.
+    pub duplicate_fingerprints: usize,
+    /// Average output fingerprint cardinality.
+    pub mean_active_bits: f64,
+    /// Fraction of training vectors assigned to the busiest cell.
+    pub maximum_cell_fraction: f64,
+    /// exp(entropy) of the empirical sample-to-cell distribution, in cells.
+    pub effective_occupied_cells: f64,
 }
 
 impl TrainingConfig {
@@ -89,6 +199,28 @@ impl TrainingConfig {
     pub fn validate(&self) -> Result<()> {
         crate::som::training::validate_config(&self.som)?;
         self.fingerprint.validate()?;
+        if self.projection_method == ProjectionMethod::Spectral
+            && (self.feature_model == FeatureModel::Tfidf
+                || self.projection_dim == 0
+                || self.projection_iterations == 0)
+        {
+            return Err(ProteusError::Config(
+                "Spectral projection requires PPMI features, positive dimension and positive iterations".into(),
+            ));
+        }
+        if self.context_window == 0
+            || !self.context_alpha.is_finite()
+            || self.context_alpha <= 0.0
+            || self.context_alpha > 1.0
+            || !self.folding.sigma.is_finite()
+            || self.folding.sigma < 0.0
+            || !self.folding.background_exponent.is_finite()
+            || !(0.0..=1.0).contains(&self.folding.background_exponent)
+        {
+            return Err(ProteusError::Config(
+                "Invalid context or folding parameters".into(),
+            ));
+        }
         if self.snippet_tokens == 0 || self.min_count == 0 {
             return Err(ProteusError::Config(
                 "snippet_tokens and min_count must be positive".into(),
@@ -142,7 +274,8 @@ pub fn read_snippets(reader: impl BufRead, config: &TrainingConfig) -> Result<Ve
     Ok(snippets)
 }
 
-/// Train a retina with exact vocabulary TF-IDF by default. Projection is opt-in.
+/// Train a retina with exact vocabulary TF-IDF context folding by default.
+/// A named alternative uses contextual PPMI features.
 /// `progress` receives completed and total online updates.
 pub fn train_corpus<F>(
     reader: impl BufRead,
@@ -156,52 +289,15 @@ where
     // A missing seed requests randomness, but the resolved seed is always persisted.
     let seed = config.som.seed.unwrap_or_else(|| rand::thread_rng().gen());
     config.som.seed = Some(seed);
-    let snippets = read_snippets(reader, &config)?;
-    if snippets.is_empty() {
-        return Err(ProteusError::EmptyInput(
-            "No normalized corpus tokens".into(),
-        ));
-    }
-    let mut digest = Sha256::new();
-    for snippet in &snippets {
-        digest.update((snippet.len() as u64).to_le_bytes());
-        for token in snippet {
-            digest.update((token.len() as u64).to_le_bytes());
-            digest.update(token.as_bytes());
-        }
-    }
-    let corpus_sha256 = format!("{:x}", digest.finalize());
-    let mut counts = BTreeMap::<String, usize>::new();
-    let mut df = BTreeMap::<String, usize>::new();
-    for snippet in &snippets {
-        let mut terms = BTreeMap::<&str, usize>::new();
-        for word in snippet {
-            *counts.entry(word.clone()).or_default() += 1;
-            *terms.entry(word).or_default() += 1;
-        }
-        for word in terms.keys() {
-            *df.entry((*word).to_owned()).or_default() += 1;
-        }
-    }
-    counts.retain(|_, n| *n >= config.min_count);
-    if counts.is_empty() {
-        return Err(ProteusError::Training("No words meet min_count".into()));
-    }
-    let features: Vec<&str> = counts
-        .keys()
-        .filter(|w| df[*w] as f64 / snippets.len() as f64 <= config.max_document_frequency)
-        .map(String::as_str)
-        .collect();
-    if features.is_empty() {
-        return Err(ProteusError::Training("No TF-IDF features remain; increase max_document_frequency or supply more diverse contexts".into()));
-    }
-    let feature_ids: HashMap<&str, usize> =
-        features.iter().enumerate().map(|(i, &w)| (w, i)).collect();
-    let idf: Vec<f32> = features
-        .iter()
-        .map(|w| ((1.0 + snippets.len() as f64) / (1.0 + df[*w] as f64)).ln() as f32 + 1.0)
-        .collect();
-    let dimension = if config.projection_dim == 0 {
+    let corpus = corpus::PreparedCorpus::read(reader, &config)?;
+    let snippets = &corpus.snippets;
+    let counts = &corpus.word_counts;
+    let features = corpus.feature_names(config.max_document_frequency)?;
+    let idf = corpus.inverse_document_frequency(&features);
+    let corpus_sha256 = corpus.digest.clone();
+    let dimension = if config.projection_method == ProjectionMethod::Spectral {
+        config.projection_dim.min(features.len())
+    } else if config.projection_dim == 0 {
         features.len()
     } else {
         config.projection_dim
@@ -233,36 +329,11 @@ where
             })
             .collect()
     };
-    let mut inputs = Vec::new();
-    let mut kept = Vec::new();
-    for (i, snippet) in snippets.iter().enumerate() {
-        let mut tf = BTreeMap::<usize, usize>::new();
-        for word in snippet {
-            if let Some(&j) = feature_ids.get(word.as_str()) {
-                *tf.entry(j).or_default() += 1;
-            }
-        }
-        if tf.is_empty() {
-            continue;
-        }
-        let mut v = vec![0.0; dimension];
-        for (j, count) in tf {
-            let weight = (1.0 + (count as f32).ln()) * idf[j];
-            if projection.is_empty() {
-                v[j] = weight;
-            } else {
-                for (out, &r) in v.iter_mut().zip(&projection[j]) {
-                    *out += weight * r;
-                }
-            }
-        }
-        if v.iter().all(|&x| x == 0.0) {
-            continue;
-        }
-        normalize_f32(&mut v);
-        inputs.push(v);
-        kept.push(i);
-    }
+    let feature_space =
+        features::FeatureSpace::new(counts, &features, &idf, &projection, dimension);
+    let encoded_snippets = feature_space.encode_snippets(snippets, &config);
+    let inputs = encoded_snippets.vectors;
+    let kept = encoded_snippets.source_indices;
     if inputs.is_empty() {
         return Err(ProteusError::Training("No nonzero snippet vectors".into()));
     }
@@ -279,9 +350,11 @@ where
     let bmus = trainer.train_vectors(&mut som, &inputs, progress)?;
     let mut hits = BTreeMap::<String, BTreeMap<usize, usize>>::new();
     let mut occupied = std::collections::BTreeSet::new();
+    let mut occupancy = vec![0usize; cells];
     let mut error = 0.0;
     for ((&snippet_idx, &bmu), input) in kept.iter().zip(&bmus).zip(&inputs) {
         occupied.insert(bmu);
+        occupancy[bmu] += 1;
         error += som.neurons[bmu]
             .weights
             .iter()
@@ -303,23 +376,52 @@ where
     }
     let total_tokens: usize = counts.values().sum();
     let limit = config.fingerprint.active_bit_limit(cells as u32);
+    let single_context_words = hits
+        .values()
+        .filter(|row| row.values().sum::<usize>() == 1)
+        .count();
     let mut fingerprints = HashMap::new();
+    let folder = folding::SpatialFolder::new(
+        &occupancy,
+        config.som.dimension,
+        config.som.toroidal,
+        &config.folding,
+    );
     for (word, row) in hits {
-        let mut row: Vec<_> = row.into_iter().collect();
-        row.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        let positions: Vec<u32> = row
-            .into_iter()
-            .take(limit)
-            .map(|(cell, _)| cell as u32)
-            .collect();
+        let positions = folder.fold(&row, limit);
         let frequency = counts[&word] as f64 / total_tokens as f64;
         fingerprints.insert(
             word.clone(),
             WordFingerprint::with_frequency(word, &positions, cells as u32, frequency),
         );
     }
+    let mut patterns = std::collections::BTreeSet::new();
+    let mut active_bits = 0usize;
+    for fp in fingerprints.values() {
+        active_bits += fp.cardinality() as usize;
+        patterns.insert(fp.fingerprint.to_positions());
+    }
+    let entropy = occupancy
+        .iter()
+        .filter(|&&n| n > 0)
+        .map(|&n| {
+            let p = n as f64 / inputs.len() as f64;
+            -p * p.ln()
+        })
+        .sum::<f64>();
+    let quality = QualityDiagnostics {
+        single_context_words,
+        duplicate_fingerprints: fingerprints.len() - patterns.len(),
+        mean_active_bits: active_bits as f64 / fingerprints.len() as f64,
+        maximum_cell_fraction: *occupancy.iter().max().unwrap() as f64 / inputs.len() as f64,
+        effective_occupied_cells: entropy.exp(),
+    };
     let report = TrainingReport {
-        algorithm: "semantic-folding-tfidf-online-som-v1".into(),
+        algorithm: if config.folding.sigma == 0.0 && config.feature_model == FeatureModel::Tfidf {
+            "semantic-folding-tfidf-online-som-v1".into()
+        } else {
+            "semantic-folding-context-online-som-v2".into()
+        },
         corpus_sha256,
         snippets: snippets.len(),
         mapped_snippets: inputs.len(),
@@ -327,6 +429,7 @@ where
         features: features.len(),
         occupied_cells: occupied.len(),
         quantization_error: error / inputs.len() as f64,
+        quality: Some(quality),
         config: config.clone(),
     };
     let mut retina = Retina::with_index(

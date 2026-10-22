@@ -249,6 +249,9 @@ pub struct RetinaMetadata {
     pub text_config: crate::TextConfig,
     /// Resolved training parameters and diagnostics, if known.
     pub training_report: Option<crate::training::TrainingReport>,
+    /// Provenance for a non-spatial angular retina.
+    #[serde(default)]
+    pub angular_report: Option<crate::training::angular::AngularReport>,
     /// Frequencies and POS tags, keyed in canonical word order.
     pub word_metadata: std::collections::BTreeMap<String, (f64, Vec<String>)>,
 }
@@ -263,6 +266,27 @@ impl RetinaMetadata {
         {
             return Err(invalid("Invalid word frequency"));
         }
+        if let Some(report) = &self.angular_report {
+            report.config.validate()?;
+            if self.training_report.is_some()
+                || report.config.dimension != header.dimension as usize
+                || report.config.text != self.text_config
+                || report.config.fingerprint != self.fingerprint_config
+                || report.vocabulary != header.num_words as usize
+                || report.snippets == 0
+                || report.features == 0
+                || report.vector_dimension == 0
+                || report.vector_dimension > report.features
+                || report.vector_dimension > report.config.embedding_dimension
+                || report.active_bits
+                    != self
+                        .fingerprint_config
+                        .active_bit_limit(header.dimension * header.dimension)
+                || report.duplicate_fingerprints > report.vocabulary
+            {
+                return Err(invalid("Angular metadata does not match retina"));
+            }
+        }
         if let Some(report) = &self.training_report {
             report.config.validate()?;
             if report.config.som.dimension != header.dimension as usize
@@ -275,6 +299,21 @@ impl RetinaMetadata {
                 || report.quantization_error < 0.0
             {
                 return Err(invalid("Training metadata does not match retina"));
+            }
+            if let Some(diagnostics) = &report.quality {
+                if diagnostics.single_context_words > report.vocabulary
+                    || diagnostics.duplicate_fingerprints > report.vocabulary
+                    || !diagnostics.mean_active_bits.is_finite()
+                    || diagnostics.mean_active_bits < 0.0
+                    || diagnostics.mean_active_bits > (header.dimension * header.dimension) as f64
+                    || !diagnostics.maximum_cell_fraction.is_finite()
+                    || !(0.0..=1.0).contains(&diagnostics.maximum_cell_fraction)
+                    || !diagnostics.effective_occupied_cells.is_finite()
+                    || diagnostics.effective_occupied_cells < 1.0
+                    || diagnostics.effective_occupied_cells > report.occupied_cells as f64 + 1e-8
+                {
+                    return Err(invalid("Invalid training quality diagnostics"));
+                }
             }
         }
         Ok(())

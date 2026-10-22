@@ -2,6 +2,8 @@
 //!
 //! Command-line interface for training and using semantic retinas.
 
+mod cli;
+
 use clap::{Parser, Subcommand};
 use image::{ImageBuffer, Rgb};
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
@@ -33,6 +35,25 @@ struct Cli {
 enum Commands {
     /// Train a new retina from a corpus
     Train(TrainArgs),
+
+    /// Train non-spatial angular fingerprints from local distributional evidence
+    TrainDistributional(cli::quality::TrainDistributionalArgs),
+
+    /// Evaluate labelled word pairs; emit JSON with rank correlation and coverage
+    Evaluate {
+        /// Retina to evaluate
+        #[arg(short, long)]
+        retina: PathBuf,
+        /// UTF-8 TSV: word1, word2, reference score (additional columns allowed)
+        #[arg(long)]
+        pairs: PathBuf,
+        /// One-based reference-score column (SimLex-999 uses 4)
+        #[arg(long, default_value_t = 3)]
+        score_column: usize,
+        /// Skip the first nonblank line explicitly
+        #[arg(long)]
+        header: bool,
+    },
 
     /// Compute fingerprint for text
     Fingerprint {
@@ -241,6 +262,13 @@ fn main() {
 
     let result = match cli.command {
         Commands::Train(args) => train_retina(args),
+        Commands::TrainDistributional(args) => cli::quality::train_distributional_retina(args),
+        Commands::Evaluate {
+            retina,
+            pairs,
+            score_column,
+            header,
+        } => cli::quality::evaluate_retina(retina, pairs, score_column, header),
 
         Commands::Fingerprint {
             retina,
@@ -365,9 +393,30 @@ struct TrainArgs {
     /// Exclude TF-IDF features occurring in more than this fraction of snippets
     #[arg(long, default_value_t = 0.5)]
     max_document_frequency: f64,
-    /// Optional TF-IDF random projection; 0 keeps exact vocabulary coordinates
+    /// Feature projection dimension; 0 keeps exact vocabulary coordinates
     #[arg(long, default_value_t = 0)]
     projection_dim: usize,
+    /// Snippet geometry: lexical TF-IDF or local word-context positive PMI
+    #[arg(long, value_parser = ["tfidf", "context-ppmi"], default_value = "tfidf")]
+    feature_model: String,
+    /// Feature reduction: random coordinates or a learned spectral subspace
+    #[arg(long, value_parser = ["random", "spectral"], default_value = "random")]
+    projection_method: String,
+    /// Orthogonal power iterations for spectral projection
+    #[arg(long, default_value_t = 2)]
+    projection_iterations: usize,
+    /// Local PPMI context radius in original token positions
+    #[arg(long, default_value_t = 5)]
+    context_window: usize,
+    /// PPMI context marginal smoothing exponent
+    #[arg(long, default_value_t = 0.75)]
+    context_alpha: f64,
+    /// Folding Gaussian standard deviation in cells (0: raw observed incidence)
+    #[arg(long, default_value_t = 0.0)]
+    folding_sigma: f64,
+    /// Folding occupancy correction exponent (0: none, 1: conditional frequency)
+    #[arg(long, default_value_t = 0.0)]
+    background_exponent: f64,
     /// Initial online learning rate
     #[arg(long, default_value_t = 0.1)]
     initial_learning_rate: f64,
@@ -395,7 +444,9 @@ struct TrainArgs {
 }
 
 fn train_retina(args: TrainArgs) -> Result<()> {
-    use proteus::training::{train_corpus, DocumentMode, TrainingConfig};
+    use proteus::training::{
+        train_corpus, DocumentMode, FeatureModel, FoldingConfig, ProjectionMethod, TrainingConfig,
+    };
     let start = Instant::now();
     let config = TrainingConfig {
         som: SomConfig {
@@ -425,6 +476,23 @@ fn train_retina(args: TrainArgs) -> Result<()> {
         min_count: args.min_count,
         max_document_frequency: args.max_document_frequency,
         projection_dim: args.projection_dim,
+        feature_model: if args.feature_model == "tfidf" {
+            FeatureModel::Tfidf
+        } else {
+            FeatureModel::ContextPpmi
+        },
+        projection_method: if args.projection_method == "spectral" {
+            ProjectionMethod::Spectral
+        } else {
+            ProjectionMethod::Random
+        },
+        projection_iterations: args.projection_iterations,
+        context_window: args.context_window,
+        context_alpha: args.context_alpha,
+        folding: FoldingConfig {
+            sigma: args.folding_sigma,
+            background_exponent: args.background_exponent,
+        },
         ..Default::default()
     };
     config.validate()?;
@@ -441,12 +509,17 @@ fn train_retina(args: TrainArgs) -> Result<()> {
         args.documents, args.snippet_tokens, args.min_count, args.max_document_frequency
     );
     println!(
-        "TF-IDF projection: {}",
+        "Feature projection ({}): {}",
+        args.projection_method,
         if args.projection_dim == 0 {
             "none (exact)".into()
         } else {
             args.projection_dim.to_string()
         }
+    );
+    println!(
+        "Features: {}; folding sigma: {} cells; occupancy exponent: {}",
+        args.feature_model, args.folding_sigma, args.background_exponent
     );
     let pb = ProgressBar::new(args.iterations as u64);
     pb.set_style(
@@ -473,7 +546,7 @@ fn train_retina(args: TrainArgs) -> Result<()> {
         report.mapped_snippets,
         report.snippets,
         report.features,
-        report.config.som.weight_dimension
+        report.config.som.weight_dimension,
     );
     println!(
         "Occupied cells: {}/{}; mean quantization error: {:.6}",
@@ -481,8 +554,16 @@ fn train_retina(args: TrainArgs) -> Result<()> {
         retina.grid_size(),
         report.quantization_error
     );
+    if let Some(diagnostics) = &report.quality {
+        println!("Evidence: {} single-context words; {} duplicate fingerprints; {:.1} mean active bits; {:.1} effective occupied cells",
+            diagnostics.single_context_words,
+            diagnostics.duplicate_fingerprints,
+            diagnostics.mean_active_bits,
+            diagnostics.effective_occupied_cells,
+        );
+    }
     if report.mapped_snippets < retina.grid_size() as usize {
-        println!("Corpus has fewer usable contexts than grid cells; a smaller grid can increase cell support.");
+        println!("Corpus has fewer training vectors than grid cells; a smaller grid can increase cell support.");
     }
     Ok(())
 }
@@ -564,6 +645,13 @@ fn show_info(retina_path: PathBuf) -> Result<()> {
             "  Training: {}",
             serde_json::to_string_pretty(report)
                 .map_err(|e| proteus::ProteusError::Serialization(e.to_string()))?
+        );
+    } else if let Some(report) = retina.angular_report() {
+        println!("  Coordinates: non-spatial angular features");
+        println!(
+            "  Training: {}",
+            serde_json::to_string_pretty(report)
+                .map_err(|error| proteus::ProteusError::Serialization(error.to_string()))?
         );
     } else {
         println!("  Training provenance: unknown (legacy or manually constructed model)");
@@ -1011,6 +1099,11 @@ fn semantic_lookup(
     // Load retina
     println!("[1/3] Loading retina...");
     let retina = Retina::load(&retina_path)?;
+    if !retina.has_spatial_topology() {
+        return Err(proteus::ProteusError::Config(
+            "Spatial lookup is undefined for angular fingerprints; use similar or lookup".into(),
+        ));
+    }
     let dimension = retina.dimension();
     let grid_size = dimension * dimension;
 

@@ -69,6 +69,23 @@ resolved configuration, normalized-corpus digest, occupied cells and mean
 quantization error. See the [algorithm contract](algorithm.md) for equations and
 the [CLI configuration tables](cli.md#training-configuration) for exposed knobs.
 
+The public `FeatureModel`, `ProjectionMethod` and `FoldingConfig` types in
+`proteus::training` select explicit context-map alternatives.
+`TrainingConfig::default()` retains TF-IDF, random/exact projection and raw
+incidence. `FoldingConfig::gaussian()` constructs the optional one-cell Gaussian
+preset. See the [quality contract](quality.md) for semantics and limits.
+
+The separate `proteus::training::angular::{train_distributional, AngularConfig}`
+API produces non-spatial angular retinas and an `AngularReport`. The report is
+available through `Retina::angular_report()` and survives migration.
+`Retina::has_spatial_topology()` distinguishes these models from the legacy
+spatial interpretation. Its progress callback counts encoded words, not updates.
+
+For labelled pairs, `proteus::evaluation::{read_word_pairs, evaluate_pairs}`
+returns all predictions, missing-vocabulary coverage and tie-aware Spearman
+correlation. Undefined correlations are `None`; missing words are not scored as
+zero. The CLI exposes this as `evaluate`.
+
 For numerical vectors, `SomTrainer::train_vectors` takes a mutable `Som`,
 `&[Vec<f32>]` and a progress callback, returning final-map BMU indices.
 `train`/`train_fast` are compatibility adapters. `WordEmbeddings` is the legacy

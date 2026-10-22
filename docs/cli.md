@@ -54,7 +54,14 @@ retained vocabulary; these examples do not promise a particular neighbour list.
 | `--snippet-tokens` | 64 | Maximum normalized tokens per context |
 | `--min-count` | 2 | Minimum corpus token count for retained words |
 | `--max-document-frequency` | 0.5 | Maximum snippet fraction for TF-IDF features; does not itself remove output words |
-| `--projection-dim` | 0 | Zero uses vocabulary coordinates; positive enables seeded projection |
+| `--projection-dim` | 0 | Zero uses vocabulary coordinates; positive enables the selected projection |
+| `--feature-model` | tfidf | `tfidf` or `context-ppmi` |
+| `--projection-method` | random | Seeded random coordinates or `spectral` word-context subspace |
+| `--projection-iterations` | 2 | Orthogonal power iterations for spectral projection |
+| `--context-window` | 5 | Maximum token distance in PPMI co-occurrence counting |
+| `--context-alpha` | 0.75 | PPMI context-marginal smoothing exponent |
+| `--folding-sigma` | 0 | Gaussian interpolation width in cells; zero retains raw incidence |
+| `--background-exponent` | 0 | Occupancy correction power for positive folding sigma |
 | `--initial-learning-rate` | 0.1 | Initial update coefficient |
 | `--final-learning-rate` | 0.01 | Final update coefficient |
 | `--initial-radius` | dimension/2 | Initial Gaussian width in cells |
@@ -80,6 +87,31 @@ It has no fixed neighbour-quality guarantee. Density is a cap: low-support words
 can have fewer bits. Increasing iterations or density cannot supply absent
 contexts. See [training cost](algorithm.md#cost-and-bounded-extensions).
 
+## Distributional training
+
+`train-distributional` learns local PPMI word vectors, projects them into a
+spectral subspace, then encodes sparse Gaussian response ranks. Its bit positions
+are non-spatial; it does not use a SOM. Its dedicated command accepts no SOM
+learning-rate, radius, topology or update-count flags.
+
+```sh
+proteus train-distributional -i corpus.txt -o distributional.retina \
+    --embedding-dimension 128 --power-iterations 2 --seed 42
+```
+
+It shares `--input`, `--output`, `--dimension`, `--seed`, `--documents`,
+`--snippet-tokens`, `--min-count`, `--max-document-frequency`, `--context-window`,
+`--context-alpha`, `--sparsity`, `--max-active-bits` and `--threads` with the
+corresponding meanings above. `--embedding-dimension` defaults to 128 and
+`--power-iterations` to 2. Spectral whitening is enabled by default;
+`--no-whitening` preserves spectral-direction scale. Progress counts encoded words. Model information
+explicitly identifies non-spatial coordinates. `semantic-lookup` rejects these
+models; exact bitmap lookup and word similarity remain defined.
+
+The [quality guide](quality.md) gives the equations, limitations, and evaluation
+protocol. This command is a separate distributional representation, not a claim
+to reproduce the context-map architecture or a proprietary retina.
+
 ## Query and inspection commands
 
 | Command | Inputs / options | Result |
@@ -87,7 +119,8 @@ contexts. See [training cost](algorithm.md#cost-and-bounded-extensions).
 | `fingerprint` | `-r FILE TEXT`; `-f positions\|binary\|hex` | Text fingerprint; default format is `positions` |
 | `similar` | `-r FILE WORD`; `-k COUNT` (10) | Cosine-ranked words, excluding the query; lexical tie-breaking |
 | `similarity` | `-r FILE TEXT1 TEXT2` | Cosine similarity of text fingerprints |
-| `info` | `FILE` | Grid, vocabulary and available training provenance |
+| `info` | `FILE` | Grid, vocabulary, support diagnostics and available training provenance |
+| `evaluate` | `-r FILE --pairs TSV`; `--score-column N` (3), `--header` | JSON pair predictions, coverage and tie-aware Spearman correlation |
 | `migrate` | `-i OLD -o NEW` | Current file format with index and available metadata |
 | `lookup` | `-r FILE 'POS,POS'`; `-k COUNT` (10), `--combined` | Words at cells; combined mode ranks raw position overlap |
 | `semantic-lookup` | `-r FILE 'POS,POS'`; `-k COUNT` (20) | Spatially weighted word lookup |
@@ -137,5 +170,6 @@ Segment mode also accepts `--block-size`, `--threshold`, `--min-segment` and
 | Neural segmentation cannot initialize | Check ONNX/model availability, or use `--fast` for regex splitting |
 | Old file has unknown provenance | Missing metadata is not recoverable by migration; retraining creates new provenance |
 
-Argument definitions: [`src/main.rs`](../src/main.rs). Numerical assumptions and
+Argument definitions: [`src/main.rs`](../src/main.rs) and
+[`src/cli/quality.rs`](../src/cli/quality.rs). Numerical assumptions and
 edge cases: [algorithm contract](algorithm.md#assumption-register).

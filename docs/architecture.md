@@ -30,12 +30,20 @@ pass builds word/cell incidence. Seeded reproducibility is scoped to the same
 numerical platform, binary, inputs and configuration. The [algorithm](algorithm.md)
 specifies schedules, ties, floating-point behavior and sparsification.
 
+The default diagram shows context-incidence folding. Optional PPMI coordinates,
+spatial interpolation, and non-spatial angular codes are separate named choices described
+in the [quality guide](quality.md). Angular codes select Gaussian response features directly;
+they do not claim snippet-incidence or spatial-neighborhood semantics.
+
 ## Source ownership
 
 | Area | Source | Responsibility |
 | --- | --- | --- |
-| CLI | [`main.rs`](../src/main.rs) | Argument mapping, commands and PNG rendering |
-| Corpus training | [`training.rs`](../src/training.rs) | Input records, features, provenance and fingerprint folding |
+| CLI | [`main.rs`](../src/main.rs), [`cli/quality.rs`](../src/cli/quality.rs) | Argument mapping, quality commands and PNG rendering |
+| Corpus training | [`training.rs`](../src/training.rs), [`training/corpus.rs`](../src/training/corpus.rs) | Input records, configuration, provenance and shared corpus preparation |
+| Feature encoding | [`training/features.rs`](../src/training/features.rs), [`training/spectral.rs`](../src/training/spectral.rs) | Lexical/PPMI vectors and orthogonal subspace projection |
+| Fingerprint construction | [`training/folding.rs`](../src/training/folding.rs), [`training/angular.rs`](../src/training/angular.rs) | Optional spatial interpolation and non-spatial distributional encoding |
+| Quality evaluation | [`evaluation.rs`](../src/evaluation.rs) | Labelled pair parsing, coverage, predictions and rank correlation |
 | Configuration | [`config.rs`](../src/config.rs) | SOM, normalization, fingerprint and legacy storage options |
 | Text | [`text/`](../src/text/) | Tokenization, normalization and sentence-model wrapper |
 | Neural sentence model | [`wtpsplit/`](../src/wtpsplit/) | Vendored SaT model loading and inference |
@@ -54,7 +62,7 @@ training path. See [advanced interfaces](advanced.md) for their metrics and use.
 
 New files use format v4: a 64-byte header, JSON metadata, word index, bitmaps,
 string pool, and optional persisted posting index. Metadata includes inference
-configuration, frequencies, POS tags and an optional training report.
+configuration, frequencies, POS tags and an optional map or angular training report.
 Canonical ordering supports same-environment byte reproducibility.
 
 Readers accept upstream v1, v2 (bincode index), v3 (mapped index), and the earlier

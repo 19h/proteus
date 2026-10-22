@@ -29,6 +29,7 @@ pub struct Retina {
     config: FingerprintConfig,
     text_config: TextConfig,
     training_report: Option<TrainingReport>,
+    angular_report: Option<crate::training::angular::AngularReport>,
 }
 
 impl Retina {
@@ -52,6 +53,7 @@ impl Retina {
             config,
             text_config: TextConfig::default(),
             training_report: None,
+            angular_report: None,
         }
     }
 
@@ -78,6 +80,7 @@ impl Retina {
             config,
             text_config: TextConfig::default(),
             training_report: None,
+            angular_report: None,
         }
     }
 
@@ -87,6 +90,7 @@ impl Retina {
         let mut retina = Self::new(fingerprints, header.dimension, metadata.fingerprint_config);
         retina.text_config = metadata.text_config;
         retina.training_report = metadata.training_report;
+        retina.angular_report = metadata.angular_report;
         retina.inverted_index = index;
         if retina.inverted_index.is_none() {
             retina.build_index();
@@ -109,6 +113,7 @@ impl Retina {
                 fingerprint_config: self.config.clone(),
                 text_config: self.text_config.clone(),
                 training_report: self.training_report.clone(),
+                angular_report: self.angular_report.clone(),
                 word_metadata: Default::default(),
             },
             self.inverted_index.as_ref(),
@@ -124,6 +129,25 @@ impl Retina {
     pub fn set_training_report(&mut self, report: TrainingReport) {
         self.text_config = report.config.text.clone();
         self.training_report = Some(report);
+        self.angular_report = None;
+    }
+
+    /// Provenance for a non-spatial angular retina, when present.
+    pub fn angular_report(&self) -> Option<&crate::training::angular::AngularReport> {
+        self.angular_report.as_ref()
+    }
+
+    /// Attach angular-training provenance and its inference normalization.
+    pub fn set_angular_report(&mut self, report: crate::training::angular::AngularReport) {
+        self.text_config = report.config.text.clone();
+        self.angular_report = Some(report);
+        self.training_report = None;
+    }
+
+    /// Whether neighboring bit positions represent learned spatial neighbors.
+    /// Legacy models retain their original spatial interpretation.
+    pub fn has_spatial_topology(&self) -> bool {
+        self.angular_report.is_none()
     }
 
     fn normalize_word(&self, word: &str) -> Option<String> {
