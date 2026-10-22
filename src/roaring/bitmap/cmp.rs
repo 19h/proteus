@@ -12,7 +12,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb1 = RoaringBitmap::new();
     /// let mut rb2 = RoaringBitmap::new();
@@ -37,7 +37,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb1 = RoaringBitmap::new();
     /// let mut rb2 = RoaringBitmap::new();
@@ -74,7 +74,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb1 = RoaringBitmap::new();
     /// let mut rb2 = RoaringBitmap::new();

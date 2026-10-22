@@ -2245,7 +2245,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fa7e49bd669d32d7bc2a15ec540a527e7764aec722a45467814005725bcd721"
 dependencies = [
  "half",
- "libloading",
  "ndarray",
  "ort-sys",
  "smallvec 2.0.0-alpha.10",
@@ -2486,9 +2485,7 @@ dependencies = [
  "memmap2",
  "ndarray",
  "once_cell",
- "ordered-float",
  "ort",
- "parking_lot",
  "pollster",
  "proptest",
  "rand 0.8.5",
@@ -2498,6 +2495,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "smallvec 1.15.1",
  "tempfile",
  "thiserror 2.0.17",

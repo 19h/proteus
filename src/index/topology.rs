@@ -214,14 +214,14 @@ impl ToroidalGrid {
         let col_next = if pos.col == dim - 1 { 0 } else { pos.col + 1 };
 
         [
-            row_prev * dim + col_prev,  // top-left
-            row_prev * dim + pos.col,   // top
-            row_prev * dim + col_next,  // top-right
-            pos.row * dim + col_prev,   // left
-            pos.row * dim + col_next,   // right
-            row_next * dim + col_prev,  // bottom-left
-            row_next * dim + pos.col,   // bottom
-            row_next * dim + col_next,  // bottom-right
+            row_prev * dim + col_prev, // top-left
+            row_prev * dim + pos.col,  // top
+            row_prev * dim + col_next, // top-right
+            pos.row * dim + col_prev,  // left
+            pos.row * dim + col_next,  // right
+            row_next * dim + col_prev, // bottom-left
+            row_next * dim + pos.col,  // bottom
+            row_next * dim + col_next, // bottom-right
         ]
     }
 
@@ -236,10 +236,10 @@ impl ToroidalGrid {
         let col_next = if pos.col == dim - 1 { 0 } else { pos.col + 1 };
 
         [
-            row_prev * dim + pos.col,   // top
-            pos.row * dim + col_prev,   // left
-            pos.row * dim + col_next,   // right
-            row_next * dim + pos.col,   // bottom
+            row_prev * dim + pos.col, // top
+            pos.row * dim + col_prev, // left
+            pos.row * dim + col_next, // right
+            row_next * dim + pos.col, // bottom
         ]
     }
 
@@ -272,7 +272,10 @@ impl ToroidalGrid {
 
         // On a geodesic: d13 ≈ d12 + d23 or permutations
         let sum_min = d12.min(d23).min(d13);
-        let sum_mid = d12.max(d23).max(d13).min(d12.min(d23).max(d13).max(d12.max(d23).min(d13)));
+        let sum_mid = d12
+            .max(d23)
+            .max(d13)
+            .min(d12.min(d23).max(d13).max(d12.max(d23).min(d13)));
         let sum_max = d12.max(d23).max(d13);
 
         (sum_max - sum_min - sum_mid).abs() < tolerance
@@ -342,9 +345,12 @@ mod tests {
     fn test_neighborhood() {
         let grid = ToroidalGrid::new(128);
 
-        // Radius 1.5 should give 5 positions (center + 4 adjacent)
-        let n = grid.neighborhood(1000, 1.5);
-        assert_eq!(n.len(), 5);
+        // The API uses a strict ball: the unit radius excludes axial neighbours.
+        let n = grid.neighborhood(1000, 1.0);
+        assert_eq!(n.len(), 1);
+        assert_eq!(grid.neighborhood(1000, 1.1).len(), 5);
+        // sqrt(2) < 1.5, so this radius also includes all four diagonals.
+        assert_eq!(grid.neighborhood(1000, 1.5).len(), 9);
 
         // Radius 1.8 should give ~9-13 positions (Cortical.io default)
         let n = grid.neighborhood(1000, 1.8);

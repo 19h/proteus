@@ -3,20 +3,17 @@
 //! Command-line interface for training and using semantic retinas.
 
 use clap::{Parser, Subcommand};
-use indicatif::{ProgressBar, ProgressStyle, HumanDuration};
+use image::{ImageBuffer, Rgb};
+use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use log::error;
-use rayon::prelude::*;
 use proteus::{
-    FingerprintConfig, Retina, Result, Sdr, Som, SomConfig, SomTrainer, Tokenizer,
-    WordFingerprinter, SegmentationConfig, SemanticSegmenter,
-    SemanticLookupEngine, SemanticLookupConfig, ToroidalGrid,
+    FingerprintConfig, Result, Retina, SegmentationConfig, SemanticSegmenter, SomConfig, Tokenizer,
 };
-use proteus::som::training::{WordEmbeddings, DEFAULT_EMBEDDING_DIM};
+use proteus::{Sdr, SemanticLookupConfig, SemanticLookupEngine, ToroidalGrid};
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{self, BufReader, Read};
 use std::path::PathBuf;
 use std::time::Instant;
-use image::{ImageBuffer, Rgb};
 
 #[derive(Parser)]
 #[command(name = "proteus")]
@@ -35,27 +32,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Train a new retina from a corpus
-    Train {
-        /// Input corpus file (one document per line)
-        #[arg(short, long)]
-        input: PathBuf,
-
-        /// Output retina file
-        #[arg(short, long)]
-        output: PathBuf,
-
-        /// Grid dimension (default: 128)
-        #[arg(short, long, default_value = "128")]
-        dimension: usize,
-
-        /// Number of training iterations
-        #[arg(short = 'n', long, default_value = "100000")]
-        iterations: usize,
-
-        /// Random seed for reproducibility
-        #[arg(short, long)]
-        seed: Option<u64>,
-    },
+    Train(TrainArgs),
 
     /// Compute fingerprint for text
     Fingerprint {
@@ -67,7 +44,7 @@ enum Commands {
         text: String,
 
         /// Output format (positions, binary, hex)
-        #[arg(short, long, default_value = "positions")]
+        #[arg(short, long, default_value = "positions", value_parser = ["positions", "binary", "hex"])]
         format: String,
     },
 
@@ -129,19 +106,17 @@ enum Commands {
         /// Show similarity/depth scores for debugging
         #[arg(long)]
         debug: bool,
-
-        /// Use fast regex-based sentence splitting (much faster but less accurate)
+        /// Use regex sentence splitting without loading a neural model
         #[arg(short, long)]
         fast: bool,
     },
-
     /// Migrate retina file to latest format (adds inverted index)
     Migrate {
-        /// Input retina file (v1 or v2)
+        /// Input retina file (legacy or current format)
         #[arg(short, long)]
         input: PathBuf,
 
-        /// Output retina file (will be v2 with inverted index)
+        /// Output retina file (v4 with metadata and inverted index)
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -254,7 +229,6 @@ enum Commands {
         fast: bool,
     },
 }
-
 fn main() {
     let cli = Cli::parse();
 
@@ -266,13 +240,7 @@ fn main() {
     }
 
     let result = match cli.command {
-        Commands::Train {
-            input,
-            output,
-            dimension,
-            iterations,
-            seed,
-        } => train_retina(input, output, dimension, iterations, seed),
+        Commands::Train(args) => train_retina(args),
 
         Commands::Fingerprint {
             retina,
@@ -302,8 +270,15 @@ fn main() {
             min_segment,
             debug,
             fast,
-        } => segment_text(retina, input, block_size, threshold, min_segment, debug, fast),
-
+        } => segment_text(
+            retina,
+            input,
+            block_size,
+            threshold,
+            min_segment,
+            debug,
+            fast,
+        ),
         Commands::Migrate { input, output } => migrate_retina(input, output),
 
         Commands::Lookup {
@@ -325,8 +300,7 @@ fn main() {
             stats,
             kernel,
         } => semantic_lookup(
-            retina, positions, count, radius, sigma,
-            adaptive, explain, clusters, stats, kernel,
+            retina, positions, count, radius, sigma, adaptive, explain, clusters, stats, kernel,
         ),
 
         Commands::FingerprintImage {
@@ -362,147 +336,155 @@ fn main() {
     }
 }
 
-fn train_retina(
+#[derive(clap::Args)]
+struct TrainArgs {
+    /// UTF-8 corpus (blank-line separated paragraphs by default)
+    #[arg(short, long)]
     input: PathBuf,
+    /// Output model, written atomically
+    #[arg(short, long)]
     output: PathBuf,
+    /// Square grid side length
+    #[arg(short, long, default_value_t = 128)]
     dimension: usize,
+    /// Exact number of online SOM updates
+    #[arg(short = 'n', long, default_value_t = 100_000)]
     iterations: usize,
-    seed: Option<u64>,
-) -> Result<()> {
-    let start_time = Instant::now();
-
-    println!("Proteus Semantic Folding Engine");
-    println!("   Training retina from: {}", input.display());
-    println!();
-
-    // Create progress bar style
-    let spinner_style = ProgressStyle::default_spinner()
-        .template("{spinner:.cyan} {msg}")
-        .unwrap();
-
-    let bar_style = ProgressStyle::default_bar()
-        .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) ETA: {eta}")
-        .unwrap()
-        .progress_chars("█▓▒░  ");
-
-    // Step 1: Load corpus
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(spinner_style.clone());
-    pb.set_message("Loading corpus...");
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
-
-    let file = File::open(&input)?;
-    let reader = BufReader::new(file);
-    let documents: Vec<String> = reader.lines().map_while(|l| l.ok()).collect();
-
-    pb.finish_and_clear();
-    println!("✓ Loaded {} documents", format_number(documents.len()));
-
-    // Step 2: Extract context windows (parallel)
-    let pb = ProgressBar::new(documents.len() as u64);
-    pb.set_style(bar_style.clone());
-    pb.set_message("Extracting context windows (parallel)...");
-
-    let tokenizer = Tokenizer::default_config();
-    let contexts: Vec<(String, Vec<String>)> = documents
-        .par_iter()
-        .flat_map(|doc| {
-            pb.inc(1);
-            tokenizer.context_windows_as_strings(doc, 2)
-        })
-        .collect();
-
-    pb.finish_and_clear();
-    println!("✓ Extracted {} context windows", format_number(contexts.len()));
-
-    // Step 3: Learn embeddings
-    let pb = ProgressBar::new(0);
-    pb.set_style(bar_style.clone());
-    pb.set_message(format!("Learning word embeddings ({} dimensions)...", DEFAULT_EMBEDDING_DIM));
-
-    let embeddings = WordEmbeddings::from_contexts_with_progress(&contexts, DEFAULT_EMBEDDING_DIM, seed, Some(&pb));
-
-    pb.finish_and_clear();
-    println!("✓ Learned embeddings for {} words", format_number(embeddings.len()));
-
-    // Step 4: Initialize SOM
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(spinner_style.clone());
-    pb.set_message(format!("Initializing SOM ({}x{} = {} neurons)...", dimension, dimension, dimension * dimension));
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
-
-    let som_config = SomConfig {
-        dimension,
-        weight_dimension: DEFAULT_EMBEDDING_DIM,
-        iterations,
-        seed,
-        ..Default::default()
-    };
-
-    let mut som = Som::new(&som_config);
-    let mut trainer = SomTrainer::new(som_config);
-
-    pb.finish_and_clear();
-    println!("✓ Initialized SOM ({}x{} = {} neurons, {}-dim weights)",
-        dimension, dimension, dimension * dimension, DEFAULT_EMBEDDING_DIM);
-
-    // Step 5: Train SOM with progress display
-    println!();
-    println!("Training SOM...");
-
-    let word_to_bmus = trainer.train_fast_with_progress(&mut som, &embeddings, &contexts, |_, _, _, _| {})?;
-
-    // Step 6: Generate fingerprints
-    let pb = ProgressBar::new(word_to_bmus.len() as u64);
-    pb.set_style(bar_style.clone());
-    pb.set_message("Generating fingerprints...");
-
-    let grid_size = (dimension * dimension) as u32;
-    let fp_config = FingerprintConfig::default();
-    let mut fingerprinter = WordFingerprinter::new(fp_config.clone(), grid_size);
-    fingerprinter.create_fingerprints(&word_to_bmus, Some(&pb));
-
-    pb.finish_and_clear();
-    println!("✓ Created {} word fingerprints", format_number(fingerprinter.len()));
-
-    // Step 7: Save retina
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(spinner_style);
-    pb.set_message("Saving retina...");
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
-
-    let retina = Retina::with_index(
-        fingerprinter.into_fingerprints(),
-        dimension as u32,
-        fp_config,
-    );
-    retina.save(&output)?;
-
-    pb.finish_and_clear();
-    println!("✓ Saved retina to {}", output.display());
-
-    // Summary
-    let elapsed = start_time.elapsed();
-    println!();
-    println!("Training complete in {}", HumanDuration(elapsed));
-    println!("   Vocabulary: {} words", format_number(retina.vocabulary_size()));
-    println!("   Grid: {}x{} ({} neurons)", dimension, dimension, dimension * dimension);
-    println!("   Output: {}", output.display());
-
-    Ok(())
+    /// Reproducible training seed, saved in the model
+    #[arg(short, long, default_value_t = 42)]
+    seed: u64,
+    /// Input records: paragraphs (wrapped text) or lines (one document per line)
+    #[arg(long, value_parser = ["paragraphs", "lines"], default_value = "paragraphs")]
+    documents: String,
+    /// Maximum normalized tokens per nonoverlapping context
+    #[arg(long, default_value_t = 64)]
+    snippet_tokens: usize,
+    /// Minimum corpus token frequency for a retained word
+    #[arg(long, default_value_t = 2)]
+    min_count: usize,
+    /// Exclude TF-IDF features occurring in more than this fraction of snippets
+    #[arg(long, default_value_t = 0.5)]
+    max_document_frequency: f64,
+    /// Optional TF-IDF random projection; 0 keeps exact vocabulary coordinates
+    #[arg(long, default_value_t = 0)]
+    projection_dim: usize,
+    /// Initial online learning rate
+    #[arg(long, default_value_t = 0.1)]
+    initial_learning_rate: f64,
+    /// Final online learning rate
+    #[arg(long, default_value_t = 0.01)]
+    final_learning_rate: f64,
+    /// Initial Gaussian radius in cells (default: half the grid side)
+    #[arg(long)]
+    initial_radius: Option<f64>,
+    /// Final Gaussian radius in cells
+    #[arg(long, default_value_t = 1.0)]
+    final_radius: f64,
+    /// Planar topology instead of wraparound
+    #[arg(long)]
+    planar: bool,
+    /// Worker threads (0 uses the Rayon default)
+    #[arg(long, default_value_t = 0)]
+    threads: usize,
+    /// Maximum fraction of active cells in a fingerprint
+    #[arg(long, default_value_t = 0.02)]
+    sparsity: f64,
+    /// Optional additional absolute cap on fingerprint cardinality
+    #[arg(long)]
+    max_active_bits: Option<usize>,
 }
 
-/// Format large numbers with commas for readability
-fn format_number(n: usize) -> String {
-    let s = n.to_string();
-    let mut result = String::new();
-    for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            result.push(',');
+fn train_retina(args: TrainArgs) -> Result<()> {
+    use proteus::training::{train_corpus, DocumentMode, TrainingConfig};
+    let start = Instant::now();
+    let config = TrainingConfig {
+        som: SomConfig {
+            dimension: args.dimension,
+            iterations: args.iterations,
+            seed: Some(args.seed),
+            initial_learning_rate: args.initial_learning_rate,
+            final_learning_rate: args.final_learning_rate,
+            initial_radius: args.initial_radius.unwrap_or(args.dimension as f64 / 2.0),
+            final_radius: args.final_radius,
+            toroidal: !args.planar,
+            num_threads: args.threads,
+            ..Default::default()
+        },
+        fingerprint: FingerprintConfig {
+            sparsity: args.sparsity,
+            max_active_bits: args.max_active_bits.unwrap_or(usize::MAX),
+            min_active_bits: 0,
+            weighted_aggregation: true,
+        },
+        document_mode: if args.documents == "lines" {
+            DocumentMode::Lines
+        } else {
+            DocumentMode::Paragraphs
+        },
+        snippet_tokens: args.snippet_tokens,
+        min_count: args.min_count,
+        max_document_frequency: args.max_document_frequency,
+        projection_dim: args.projection_dim,
+        ..Default::default()
+    };
+    config.validate()?;
+    println!(
+        "Training {}: {}x{} grid, {} online updates, seed {}",
+        args.input.display(),
+        args.dimension,
+        args.dimension,
+        args.iterations,
+        args.seed
+    );
+    println!(
+        "Contexts: {}, <= {} tokens; min count {}; max document frequency {}",
+        args.documents, args.snippet_tokens, args.min_count, args.max_document_frequency
+    );
+    println!(
+        "TF-IDF projection: {}",
+        if args.projection_dim == 0 {
+            "none (exact)".into()
+        } else {
+            args.projection_dim.to_string()
         }
-        result.push(c);
+    );
+    let pb = ProgressBar::new(args.iterations as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{msg} [{elapsed_precise}] [{bar:40}] {pos}/{len} ETA {eta}")
+            .unwrap(),
+    );
+    pb.set_message("Online SOM");
+    let (retina, report) = train_corpus(
+        BufReader::new(File::open(&args.input)?),
+        config,
+        |done, _| pb.set_position(done as u64),
+    )?;
+    pb.finish_and_clear();
+    retina.save(&args.output)?;
+    println!(
+        "Saved {} in {}",
+        args.output.display(),
+        HumanDuration(start.elapsed())
+    );
+    println!(
+        "Words: {}; snippets: {}/{}; features: {}; vector dimension: {}",
+        report.vocabulary,
+        report.mapped_snippets,
+        report.snippets,
+        report.features,
+        report.config.som.weight_dimension
+    );
+    println!(
+        "Occupied cells: {}/{}; mean quantization error: {:.6}",
+        report.occupied_cells,
+        retina.grid_size(),
+        report.quantization_error
+    );
+    if report.mapped_snippets < retina.grid_size() as usize {
+        println!("Corpus has fewer usable contexts than grid cells; a smaller grid can increase cell support.");
     }
-    result.chars().rev().collect()
+    Ok(())
 }
 
 fn fingerprint_text(retina_path: PathBuf, text: String, format: String) -> Result<()> {
@@ -517,7 +499,7 @@ fn fingerprint_text(retina_path: PathBuf, text: String, format: String) -> Resul
         "binary" => {
             let dense = fp.to_dense();
             for (i, &bit) in dense.iter().enumerate() {
-                if i > 0 && i % 128 == 0 {
+                if i > 0 && i % retina.dimension() as usize == 0 {
                     println!();
                 }
                 print!("{}", bit);
@@ -544,30 +526,18 @@ fn fingerprint_text(retina_path: PathBuf, text: String, format: String) -> Resul
 }
 
 fn find_similar(retina_path: PathBuf, word: String, count: usize) -> Result<()> {
-    use proteus::storage::MmappedRetina;
-
-    // Use memory-mapped access for instant loading
-    let retina = MmappedRetina::open(&retina_path)?;
-
-    if !retina.contains(&word) {
-        println!("Word '{}' not found in vocabulary", word);
-        return Ok(());
-    }
-
-    // Use fast inverted index lookup if available
-    let similar = match retina.find_similar(&word, count) {
-        Some(results) => results,
-        None => {
-            println!("No inverted index available. Run 'proteus migrate' to add one.");
-            return Ok(());
-        }
+    let mapped = proteus::storage::MmappedRetina::open(&retina_path)?;
+    let similar = if mapped.has_inverted_index() {
+        mapped
+            .find_similar(&word, count)
+            .ok_or_else(|| proteus::ProteusError::WordNotFound(word.clone()))?
+    } else {
+        Retina::load(&retina_path)?.find_similar_words(&word, count)?
     };
-
     println!("Words similar to '{}':", word);
     for (w, score) in similar {
         println!("  {:.4}  {}", score, w);
     }
-
     Ok(())
 }
 
@@ -589,6 +559,15 @@ fn show_info(retina_path: PathBuf) -> Result<()> {
     println!("  Grid dimension: {}", retina.dimension());
     println!("  Grid size: {}", retina.grid_size());
     println!("  Vocabulary size: {}", retina.vocabulary_size());
+    if let Some(report) = retina.training_report() {
+        println!(
+            "  Training: {}",
+            serde_json::to_string_pretty(report)
+                .map_err(|e| proteus::ProteusError::Serialization(e.to_string()))?
+        );
+    } else {
+        println!("  Training provenance: unknown (legacy or manually constructed model)");
+    }
 
     Ok(())
 }
@@ -677,55 +656,14 @@ fn segment_text(
 }
 
 fn migrate_retina(input: PathBuf, output: PathBuf) -> Result<()> {
-    use proteus::storage::RetinaFormat;
-
-    println!("Migrating retina: {} -> {}", input.display(), output.display());
-    let start_time = Instant::now();
-
-    // Read the input file to check version
-    let (header, fingerprints, existing_index) = RetinaFormat::read_with_index(&input)?;
-
-    println!("  Input file version: {}", header.version);
-    println!("  Vocabulary size: {} words", header.num_words);
-    println!("  Grid dimension: {}x{}", header.dimension, header.dimension);
+    let mut retina = Retina::load(&input)?;
+    retina.build_index();
+    retina.save(&output)?;
     println!(
-        "  Has inverted index: {}",
-        if existing_index.is_some() { "yes" } else { "no" }
+        "Migrated {} to {} (format v4, metadata and persisted index)",
+        input.display(),
+        output.display()
     );
-
-    // Build inverted index if not present, otherwise use existing
-    let grid_size = header.dimension * header.dimension;
-    let inverted_index = match existing_index {
-        Some(idx) => {
-            println!("  Using existing inverted index");
-            idx
-        }
-        None => {
-            println!("  Building inverted index...");
-            let idx = proteus::index::InvertedIndex::from_fingerprints(&fingerprints, grid_size);
-            println!("  Index built with {} words", idx.len());
-            idx
-        }
-    };
-
-    // Write the new file with the inverted index
-    println!("  Writing migrated retina...");
-    RetinaFormat::write_with_index(&output, &fingerprints, header.dimension, &inverted_index)?;
-
-    let elapsed = start_time.elapsed();
-    let input_size = fs::metadata(&input)?.len();
-    let output_size = fs::metadata(&output)?.len();
-
-    println!("\nMigration complete!");
-    println!("  Input size:  {} bytes", input_size);
-    println!("  Output size: {} bytes", output_size);
-    println!(
-        "  Size change: {:+} bytes ({:+.1}%)",
-        output_size as i64 - input_size as i64,
-        (output_size as f64 - input_size as f64) / input_size as f64 * 100.0
-    );
-    println!("  Time: {}", HumanDuration(elapsed));
-
     Ok(())
 }
 
@@ -743,7 +681,8 @@ fn lookup_positions(
 
     if positions.is_empty() {
         return Err(proteus::error::ProteusError::TextProcessing(
-            "No valid positions provided. Use comma-separated numbers, e.g., '1234,5678'".to_string()
+            "No valid positions provided. Use comma-separated numbers, e.g., '1234,5678'"
+                .to_string(),
         ));
     }
 
@@ -755,14 +694,25 @@ fn lookup_positions(
     // Validate positions
     for &pos in &positions {
         if pos >= grid_size {
-            return Err(proteus::error::ProteusError::TextProcessing(
-                format!("Position {} is out of range (max: {})", pos, grid_size - 1)
-            ));
+            return Err(proteus::error::ProteusError::TextProcessing(format!(
+                "Position {} is out of range (max: {})",
+                pos,
+                grid_size - 1
+            )));
         }
     }
 
-    println!("Retina: {} ({}x{} grid)", retina_path.display(), dimension, dimension);
-    println!("Looking up {} position(s): {:?}\n", positions.len(), positions);
+    println!(
+        "Retina: {} ({}x{} grid)",
+        retina_path.display(),
+        dimension,
+        dimension
+    );
+    println!(
+        "Looking up {} position(s): {:?}\n",
+        positions.len(),
+        positions
+    );
 
     if combined {
         // Show combined results ranked by how many positions each word covers
@@ -870,21 +820,22 @@ fn fingerprint_image(
         }
         (None, None) => {
             return Err(proteus::error::ProteusError::TextProcessing(
-                "No input provided. Use --input <file>, --input - for stdin, or --text <text>".to_string()
+                "No input provided. Use --input <file>, --input - for stdin, or --text <text>"
+                    .to_string(),
             ));
         }
     };
 
     if text.trim().is_empty() {
         return Err(proteus::error::ProteusError::TextProcessing(
-            "Input text is empty".to_string()
+            "Input text is empty".to_string(),
         ));
     }
 
     // Validate mode selection
     if !segment_mode && !words_mode {
         return Err(proteus::error::ProteusError::Config(
-            "Please specify a mode: --segment or --words".to_string()
+            "Please specify a mode: --segment or --words".to_string(),
         ));
     }
 
@@ -916,10 +867,14 @@ fn fingerprint_image(
         println!("  Found {} unique words", unique_words.len());
 
         let pb = ProgressBar::new(unique_words.len() as u64);
-        pb.set_style(ProgressStyle::default_bar()
-            .template("{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len}")
-            .unwrap()
-            .progress_chars("█▓▒░  "));
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "{msg}\n{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len}",
+                )
+                .unwrap()
+                .progress_chars("█▓▒░  "),
+        );
         pb.set_message("Generating word fingerprints...");
 
         for (i, word) in unique_words.iter().enumerate() {
@@ -936,9 +891,8 @@ fn fingerprint_image(
                 let filename = format!("word_{:04}_{}.png", i + 1, safe_word);
                 let filepath = output_dir.join(&filename);
 
-                img.save(&filepath).map_err(|e| {
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-                })?;
+                img.save(&filepath)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
                 image_count += 1;
             }
@@ -950,16 +904,21 @@ fn fingerprint_image(
 
     if segment_mode {
         // Load retina (or reload if already loaded for words mode)
-        println!("{}Loading retina from {}...",
+        println!(
+            "{}Loading retina from {}...",
             if words_mode { "\n" } else { "" },
-            retina_path.display());
+            retina_path.display()
+        );
         let retina = Retina::load(&retina_path)?;
         let dimension = retina.dimension();
         if !words_mode {
             println!("  Grid: {}x{}", dimension, dimension);
         }
 
-        println!("\nSegmenting text{}...", if fast { " (fast mode)" } else { "" });
+        println!(
+            "\nSegmenting text{}...",
+            if fast { " (fast mode)" } else { "" }
+        );
 
         // Configure segmenter
         let config = SegmentationConfig {
@@ -992,12 +951,16 @@ fn fingerprint_image(
             let filename = format!("segment_{:03}_{}.png", i + 1, preview);
             let filepath = output_dir.join(&filename);
 
-            img.save(&filepath).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-            })?;
+            img.save(&filepath)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
-            println!("  [{}] {} ({} chars, {} active bits)",
-                i + 1, filename, segment.text.len(), fp.cardinality());
+            println!(
+                "  [{}] {} ({} chars, {} active bits)",
+                i + 1,
+                filename,
+                segment.text.len(),
+                fp.cardinality()
+            );
             image_count += 1;
         }
         println!("  Generated {} segment fingerprint images", segment_count);
@@ -1036,7 +999,7 @@ fn semantic_lookup(
 
     if positions.is_empty() {
         return Err(proteus::error::ProteusError::TextProcessing(
-            "No valid positions provided. Use comma-separated numbers.".to_string()
+            "No valid positions provided. Use comma-separated numbers.".to_string(),
         ));
     }
 
@@ -1052,15 +1015,20 @@ fn semantic_lookup(
     let grid_size = dimension * dimension;
 
     println!("      Retina: {}", retina_path.display());
-    println!("      Grid: {}x{} ({} positions)", dimension, dimension, grid_size);
+    println!(
+        "      Grid: {}x{} ({} positions)",
+        dimension, dimension, grid_size
+    );
     println!("      Vocabulary: {} words", retina.vocabulary_size());
 
     // Validate positions
     for &pos in &positions {
         if pos >= grid_size {
-            return Err(proteus::error::ProteusError::TextProcessing(
-                format!("Position {} out of range (max: {})", pos, grid_size - 1)
-            ));
+            return Err(proteus::error::ProteusError::TextProcessing(format!(
+                "Position {} out of range (max: {})",
+                pos,
+                grid_size - 1
+            )));
         }
     }
 
@@ -1071,7 +1039,7 @@ fn semantic_lookup(
         }
         Err(_) => {
             return Err(proteus::error::ProteusError::TextProcessing(
-                "Retina has no inverted index. Run 'proteus migrate' first.".to_string()
+                "Retina has no inverted index. Run 'proteus migrate' first.".to_string(),
             ));
         }
     };
@@ -1093,8 +1061,18 @@ fn semantic_lookup(
 
     println!("      Base radius: {:.1}", radius);
     println!("      Kernel sigma: {:.1}", sigma);
-    println!("      Adaptive radius: {}", if adaptive { "enabled" } else { "disabled" });
-    println!("      Kernel weighting: {}", if use_kernel { "Gaussian decay" } else { "uniform" });
+    println!(
+        "      Adaptive radius: {}",
+        if adaptive { "enabled" } else { "disabled" }
+    );
+    println!(
+        "      Kernel weighting: {}",
+        if use_kernel {
+            "Gaussian decay"
+        } else {
+            "uniform"
+        }
+    );
 
     // Display query positions
     let grid = ToroidalGrid::new(dimension);
@@ -1102,7 +1080,10 @@ fn semantic_lookup(
 
     for &pos in &positions {
         let pos_2d = grid.to_2d(pos);
-        println!("      Position {} (row {}, col {})", pos, pos_2d.row, pos_2d.col);
+        println!(
+            "      Position {} (row {}, col {})",
+            pos, pos_2d.row, pos_2d.col
+        );
     }
 
     // Show position statistics if requested
@@ -1125,7 +1106,8 @@ fn semantic_lookup(
 
             // Get neighborhood density
             let neighbors = grid.neighborhood(pos, radius);
-            let neighbor_counts: Vec<usize> = neighbors.iter()
+            let neighbor_counts: Vec<usize> = neighbors
+                .iter()
                 .filter_map(|&n| retina.words_at_position(n).ok())
                 .map(|w| w.len())
                 .collect();
@@ -1139,7 +1121,11 @@ fn semantic_lookup(
             println!("│   Word count: {}", word_count);
             println!("│   IDF (information): {:.4}", idf);
             println!("│   Local density: {:.2} words/position", local_density);
-            println!("│   Neighborhood size (r={:.1}): {} positions", radius, neighbors.len());
+            println!(
+                "│   Neighborhood size (r={:.1}): {} positions",
+                radius,
+                neighbors.len()
+            );
 
             // Information content interpretation
             let info_level = if idf > 5.0 {
@@ -1163,7 +1149,8 @@ fn semantic_lookup(
     println!("├─────────────────────────────────────────────────────────────┤");
 
     // Expand positions to neighborhoods with Gaussian weighting
-    let mut word_scores: std::collections::HashMap<String, (f64, f64, u32)> = std::collections::HashMap::new();
+    let mut word_scores: std::collections::HashMap<String, (f64, f64, u32)> =
+        std::collections::HashMap::new();
 
     for &pos in &positions {
         // Get neighborhood with weights
@@ -1190,9 +1177,9 @@ fn semantic_lookup(
 
                 for word in words {
                     let entry = word_scores.entry(word).or_insert((0.0, f64::MAX, 0));
-                    entry.0 += combined_weight;  // Accumulated weight
-                    entry.1 = entry.1.min(distance);  // Min distance
-                    entry.2 += 1;  // Overlap count
+                    entry.0 += combined_weight; // Accumulated weight
+                    entry.1 = entry.1.min(distance); // Min distance
+                    entry.2 += 1; // Overlap count
                 }
             }
         }
@@ -1209,8 +1196,14 @@ fn semantic_lookup(
     if results.is_empty() {
         println!("│ No words found at or near these positions.                  │");
     } else {
-        println!("│ {:>5}  {:>8}  {:>6}  {:>7}  {:<20} │", "Rank", "Score", "Dist", "Overlap", "Word");
-        println!("│ {:─>5}  {:─>8}  {:─>6}  {:─>7}  {:─<20} │", "", "", "", "", "");
+        println!(
+            "│ {:>5}  {:>8}  {:>6}  {:>7}  {:<20} │",
+            "Rank", "Score", "Dist", "Overlap", "Word"
+        );
+        println!(
+            "│ {:─>5}  {:─>8}  {:─>6}  {:─>7}  {:─<20} │",
+            "", "", "", "", ""
+        );
 
         for (i, (word, score, min_dist, overlap)) in results.iter().enumerate() {
             let word_display = if word.len() > 20 {
@@ -1218,8 +1211,14 @@ fn semantic_lookup(
             } else {
                 word.clone()
             };
-            println!("│ {:>5}  {:>8.3}  {:>6.2}  {:>7}  {:<20} │",
-                i + 1, score, min_dist, overlap, word_display);
+            println!(
+                "│ {:>5}  {:>8.3}  {:>6.2}  {:>7}  {:<20} │",
+                i + 1,
+                score,
+                min_dist,
+                overlap,
+                word_display
+            );
         }
     }
     println!("└─────────────────────────────────────────────────────────────┘");
@@ -1235,9 +1234,15 @@ fn semantic_lookup(
             println!("│ {}. \"{}\"", i + 1, word);
             println!("│    Total score: {:.4}", score);
             println!("│    Components:");
-            println!("│      • Spatial proximity (Gaussian decay): based on dist {:.2}", min_dist);
+            println!(
+                "│      • Spatial proximity (Gaussian decay): based on dist {:.2}",
+                min_dist
+            );
             println!("│      • Information content (IDF weighting): incorporated in score");
-            println!("│      • Multi-position coverage: {} query positions", overlap);
+            println!(
+                "│      • Multi-position coverage: {} query positions",
+                overlap
+            );
             println!("│    Interpretation:");
 
             if *min_dist < 0.5 {
@@ -1294,11 +1299,17 @@ fn semantic_lookup(
             };
             let centroid_2d = grid.to_2d(centroid);
 
-            println!("│ Cluster {}: {} position(s) near ({}, {})",
-                i + 1, cluster.len(), centroid_2d.row, centroid_2d.col);
+            println!(
+                "│ Cluster {}: {} position(s) near ({}, {})",
+                i + 1,
+                cluster.len(),
+                centroid_2d.row,
+                centroid_2d.col
+            );
 
             // Get top words for this cluster
-            let mut cluster_words: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            let mut cluster_words: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
             for &pos in cluster {
                 if let Ok(words) = retina.words_at_position(pos) {
                     for word in words.into_iter().take(20) {
@@ -1310,10 +1321,8 @@ fn semantic_lookup(
             let mut top_words: Vec<(String, usize)> = cluster_words.into_iter().collect();
             top_words.sort_by(|a, b| b.1.cmp(&a.1));
 
-            let display_words: Vec<&str> = top_words.iter()
-                .take(5)
-                .map(|(w, _)| w.as_str())
-                .collect();
+            let display_words: Vec<&str> =
+                top_words.iter().take(5).map(|(w, _)| w.as_str()).collect();
 
             if !display_words.is_empty() {
                 println!("│   Representative words: {}", display_words.join(", "));

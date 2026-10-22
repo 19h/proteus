@@ -117,7 +117,6 @@ impl SemanticSegmenter {
         })
     }
 
-
     /// Performs semantic segmentation on the given text.
     ///
     /// Returns a full result including segments and analysis metadata.
@@ -137,7 +136,11 @@ impl SemanticSegmenter {
         };
 
         if self.config.verbose {
-            eprintln!("[segment]   Found {} sentences in {:?}", sentences.len(), step_start.elapsed());
+            eprintln!(
+                "[segment]   Found {} sentences in {:?}",
+                sentences.len(),
+                step_start.elapsed()
+            );
         }
 
         if sentences.is_empty() {
@@ -179,7 +182,10 @@ impl SemanticSegmenter {
 
         // Step 2: Compute fingerprints for each sentence
         if self.config.verbose {
-            eprintln!("[segment] Step 2: Computing fingerprints for {} sentences...", sentences.len());
+            eprintln!(
+                "[segment] Step 2: Computing fingerprints for {} sentences...",
+                sentences.len()
+            );
         }
         let step_start = Instant::now();
 
@@ -189,17 +195,25 @@ impl SemanticSegmenter {
             .collect();
 
         if self.config.verbose {
-            let avg_bits: f64 = sentence_fingerprints.iter()
+            let avg_bits: f64 = sentence_fingerprints
+                .iter()
                 .map(|fp| fp.cardinality() as f64)
-                .sum::<f64>() / sentence_fingerprints.len() as f64;
-            eprintln!("[segment]   Fingerprinted in {:?} (avg {:.1} active bits/sentence)",
-                step_start.elapsed(), avg_bits);
+                .sum::<f64>()
+                / sentence_fingerprints.len() as f64;
+            eprintln!(
+                "[segment]   Fingerprinted in {:?} (avg {:.1} active bits/sentence)",
+                step_start.elapsed(),
+                avg_bits
+            );
         }
 
         // Step 3: Create blocks and compute block fingerprints
         if self.config.verbose {
-            eprintln!("[segment] Step 3: Creating {} blocks ({} sentences/block)...",
-                sentences.len() / self.config.block_size, self.config.block_size);
+            eprintln!(
+                "[segment] Step 3: Creating {} blocks ({} sentences/block)...",
+                sentences.len() / self.config.block_size,
+                self.config.block_size
+            );
         }
         let step_start = Instant::now();
 
@@ -215,29 +229,44 @@ impl SemanticSegmenter {
             .collect();
 
         if self.config.verbose {
-            eprintln!("[segment]   Created {} block fingerprints in {:?}",
-                block_fingerprints.len(), step_start.elapsed());
+            eprintln!(
+                "[segment]   Created {} block fingerprints in {:?}",
+                block_fingerprints.len(),
+                step_start.elapsed()
+            );
         }
 
         // Step 4: Compute similarity scores between adjacent blocks
         if self.config.verbose {
-            eprintln!("[segment] Step 4: Computing {} similarity scores...", block_fingerprints.len().saturating_sub(1));
+            eprintln!(
+                "[segment] Step 4: Computing {} similarity scores...",
+                block_fingerprints.len().saturating_sub(1)
+            );
         }
         let step_start = Instant::now();
 
         let similarity_scores: Vec<f32> = (0..block_fingerprints.len().saturating_sub(1))
-            .map(|i| {
-                block_fingerprints[i].cosine_similarity(&block_fingerprints[i + 1]) as f32
-            })
+            .map(|i| block_fingerprints[i].cosine_similarity(&block_fingerprints[i + 1]) as f32)
             .collect();
 
         if self.config.verbose {
             if !similarity_scores.is_empty() {
-                let min = similarity_scores.iter().cloned().fold(f32::INFINITY, f32::min);
-                let max = similarity_scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let min = similarity_scores
+                    .iter()
+                    .cloned()
+                    .fold(f32::INFINITY, f32::min);
+                let max = similarity_scores
+                    .iter()
+                    .cloned()
+                    .fold(f32::NEG_INFINITY, f32::max);
                 let avg = similarity_scores.iter().sum::<f32>() / similarity_scores.len() as f32;
-                eprintln!("[segment]   Similarities in {:?} (min={:.3}, avg={:.3}, max={:.3})",
-                    step_start.elapsed(), min, avg, max);
+                eprintln!(
+                    "[segment]   Similarities in {:?} (min={:.3}, avg={:.3}, max={:.3})",
+                    step_start.elapsed(),
+                    min,
+                    avg,
+                    max
+                );
             }
         }
 
@@ -269,18 +298,27 @@ impl SemanticSegmenter {
         let mut depth_scores = self.compute_depth_scores(&similarity_scores);
 
         if self.config.verbose {
-            eprintln!("[segment]   Depth scores computed in {:?}", step_start.elapsed());
+            eprintln!(
+                "[segment]   Depth scores computed in {:?}",
+                step_start.elapsed()
+            );
         }
 
         // Step 6: Apply Gaussian smoothing if enabled
         if self.config.smoothing && depth_scores.len() > 2 {
             if self.config.verbose {
-                eprintln!("[segment] Step 6: Applying Gaussian smoothing (sigma={})...", self.config.smoothing_sigma);
+                eprintln!(
+                    "[segment] Step 6: Applying Gaussian smoothing (sigma={})...",
+                    self.config.smoothing_sigma
+                );
             }
             let step_start = Instant::now();
             depth_scores = self.gaussian_smooth(&depth_scores, self.config.smoothing_sigma);
             if self.config.verbose {
-                eprintln!("[segment]   Smoothing applied in {:?}", step_start.elapsed());
+                eprintln!(
+                    "[segment]   Smoothing applied in {:?}",
+                    step_start.elapsed()
+                );
             }
         } else if self.config.verbose {
             eprintln!("[segment] Step 6: Skipping smoothing (disabled or too few scores)");
@@ -295,8 +333,10 @@ impl SemanticSegmenter {
         let threshold = depth_mean + self.config.depth_threshold * depth_std;
 
         if self.config.verbose {
-            eprintln!("[segment]   Depth mean={:.4}, std={:.4}, threshold={:.4} ({:.1} std above mean)",
-                depth_mean, depth_std, threshold, self.config.depth_threshold);
+            eprintln!(
+                "[segment]   Depth mean={:.4}, std={:.4}, threshold={:.4} ({:.1} std above mean)",
+                depth_mean, depth_std, threshold, self.config.depth_threshold
+            );
         }
 
         // Step 8: Find boundary indices (in terms of blocks, then convert to sentences)
@@ -312,7 +352,10 @@ impl SemanticSegmenter {
             .collect();
 
         if self.config.verbose {
-            eprintln!("[segment]   Found {} raw boundaries above threshold", block_boundaries.len());
+            eprintln!(
+                "[segment]   Found {} raw boundaries above threshold",
+                block_boundaries.len()
+            );
         }
 
         // Enforce minimum segment size
@@ -323,7 +366,10 @@ impl SemanticSegmenter {
         );
 
         if self.config.verbose {
-            eprintln!("[segment]   After enforcing min segment size: {} boundaries", block_boundaries.len());
+            eprintln!(
+                "[segment]   After enforcing min segment size: {} boundaries",
+                block_boundaries.len()
+            );
         }
 
         // Convert block boundaries to sentence boundaries
@@ -334,15 +380,25 @@ impl SemanticSegmenter {
 
         // Step 9: Create segments
         if self.config.verbose {
-            eprintln!("[segment] Step 9: Creating {} segments...", boundary_indices.len() + 1);
+            eprintln!(
+                "[segment] Step 9: Creating {} segments...",
+                boundary_indices.len() + 1
+            );
         }
 
         let segments = self.create_segments(&sentences, &boundary_indices);
 
         if self.config.verbose {
-            eprintln!("[segment] Complete! Total time: {:?}", total_start.elapsed());
-            eprintln!("[segment] Summary: {} sentences -> {} blocks -> {} segments",
-                sentences.len(), num_blocks, segments.len());
+            eprintln!(
+                "[segment] Complete! Total time: {:?}",
+                total_start.elapsed()
+            );
+            eprintln!(
+                "[segment] Summary: {} sentences -> {} blocks -> {} segments",
+                sentences.len(),
+                num_blocks,
+                segments.len()
+            );
         }
 
         Ok(SegmentationResult {
@@ -497,18 +553,13 @@ impl SemanticSegmenter {
     }
 
     /// Creates segments from sentences and boundary indices.
-    fn create_segments(
-        &self,
-        sentences: &[String],
-        boundaries: &[usize],
-    ) -> Vec<SemanticSegment> {
+    fn create_segments(&self, sentences: &[String], boundaries: &[usize]) -> Vec<SemanticSegment> {
         let mut segments = vec![];
         let mut start = 0;
 
         for &boundary in boundaries {
             if boundary > start && boundary <= sentences.len() {
-                let segment_sentences: Vec<String> =
-                    sentences[start..boundary].to_vec();
+                let segment_sentences: Vec<String> = sentences[start..boundary].to_vec();
                 segments.push(SemanticSegment {
                     text: segment_sentences.join(" "),
                     sentences: segment_sentences,

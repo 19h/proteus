@@ -8,6 +8,8 @@
 //! +------------------+
 //! | Header (64 bytes)|
 //! +------------------+
+//! | Metadata (v4)    |
+//! +------------------+
 //! | Word Index Table |
 //! | (variable)       |
 //! +------------------+
@@ -17,22 +19,18 @@
 //! | String Pool      |
 //! | (variable)       |
 //! +------------------+
-//! | Inverted Index   |  (optional, if HAS_INVERTED_INDEX flag set)
-//! | (variable)       |
-//! +------------------+
 //! ```
 //!
 //! ### Header (64 bytes)
 //! - Magic number (4 bytes): "PRET"
 //! - Version (2 bytes)
-//! - Flags (2 bytes): bit 0 = has inverted index
+//! - Flags (2 bytes)
 //! - Grid dimension (4 bytes)
 //! - Number of words (4 bytes)
 //! - Index table offset (8 bytes)
 //! - Fingerprint data offset (8 bytes)
 //! - String pool offset (8 bytes)
-//! - Inverted index offset (8 bytes)
-//! - Reserved (16 bytes)
+//! - Reserved (24 bytes)
 //!
 //! ### Word Index Table
 //! - Array of (string_offset: u32, string_len: u16, fp_offset: u32, fp_len: u16)
@@ -46,27 +44,22 @@
 use crate::error::{ProteusError, Result};
 use crate::fingerprint::{Sdr, WordFingerprint};
 use crate::index::InvertedIndex;
+use bincode::Options;
 use memmap2::{Mmap, MmapOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::Path;
 
 /// Magic number for Proteus retina files.
 const MAGIC: &[u8; 4] = b"PRET";
 
 /// Current format version.
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
 
 /// Header size in bytes.
 const HEADER_SIZE: usize = 64;
-
-/// Flag indicating the file contains a persisted inverted index (bincode, v2).
-const FLAG_HAS_INVERTED_INDEX: u16 = 0x0001;
-
-/// Flag indicating the file contains a memory-mappable inverted index (v3).
-const FLAG_HAS_MMAP_INDEX: u16 = 0x0002;
 
 /// Retina file header.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,24 +74,12 @@ pub struct RetinaHeader {
     pub fingerprint_offset: u64,
     /// Offset to string pool.
     pub string_pool_offset: u64,
-    /// Offset to inverted index (0 if not present).
+    /// Offset of an optional persisted inverted index.
     pub inverted_index_offset: u64,
     /// Format version.
     pub version: u16,
     /// Flags.
     pub flags: u16,
-}
-
-impl RetinaHeader {
-    /// Returns true if this header indicates a bincode inverted index is present (v2).
-    pub fn has_inverted_index(&self) -> bool {
-        self.flags & FLAG_HAS_INVERTED_INDEX != 0
-    }
-
-    /// Returns true if this header indicates a memory-mappable inverted index is present (v3).
-    pub fn has_mmap_index(&self) -> bool {
-        self.flags & FLAG_HAS_MMAP_INDEX != 0
-    }
 }
 
 impl RetinaHeader {
@@ -110,24 +91,29 @@ impl RetinaHeader {
             index_offset: HEADER_SIZE as u64,
             fingerprint_offset: 0, // Set during write
             string_pool_offset: 0, // Set during write
-            inverted_index_offset: 0, // Set during write if index present
+            inverted_index_offset: 0,
             version: VERSION,
             flags: 0,
         }
     }
 
-    /// Creates a new header with memory-mappable inverted index flag set.
+    /// Header with the memory-mappable posting-index flag.
     pub fn new_with_index(dimension: u32, num_words: u32) -> Self {
-        Self {
-            dimension,
-            num_words,
-            index_offset: HEADER_SIZE as u64,
-            fingerprint_offset: 0,
-            string_pool_offset: 0,
-            inverted_index_offset: 0,
-            version: VERSION,
-            flags: FLAG_HAS_MMAP_INDEX,
-        }
+        let mut header = Self::new(dimension, num_words);
+        header.flags = 2;
+        header
+    }
+    /// Whether a legacy bincode index is present.
+    pub fn has_inverted_index(&self) -> bool {
+        self.flags & 1 != 0
+    }
+    /// Whether a memory-mappable posting index is present.
+    pub fn has_mmap_index(&self) -> bool {
+        self.flags & 2 != 0
+    }
+    /// Version 4 metadata, or the earlier local version 2 metadata layout.
+    fn has_metadata(&self) -> bool {
+        self.version == 4 || (self.version == 2 && self.flags == 0 && self.index_offset > 64)
     }
 
     /// Writes the header to bytes.
@@ -158,9 +144,7 @@ impl RetinaHeader {
         // String pool offset
         bytes[32..40].copy_from_slice(&self.string_pool_offset.to_le_bytes());
 
-        // Inverted index offset
         bytes[40..48].copy_from_slice(&self.inverted_index_offset.to_le_bytes());
-
         // Reserved (bytes 48-63)
         bytes
     }
@@ -194,11 +178,20 @@ impl RetinaHeader {
         let string_pool_offset = u64::from_le_bytes([
             bytes[32], bytes[33], bytes[34], bytes[35], bytes[36], bytes[37], bytes[38], bytes[39],
         ]);
-        // For version 1 files, inverted_index_offset will be 0 (from reserved bytes)
-        let inverted_index_offset = u64::from_le_bytes([
-            bytes[40], bytes[41], bytes[42], bytes[43], bytes[44], bytes[45], bytes[46], bytes[47],
-        ]);
 
+        let inverted_index_offset = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
+        if !matches!(version, 1..=4)
+            || flags > 2
+            || (version == 1 && flags != 0)
+            || (flags == 1 && version != 2)
+            || (flags == 2 && version < 3)
+            || ((flags == 0) != (inverted_index_offset == 0))
+        {
+            return Err(invalid("Unsupported retina version or flags"));
+        }
+        if dimension == 0 || dimension.checked_mul(dimension).is_none() {
+            return Err(invalid("Invalid grid dimension"));
+        }
         Ok(Self {
             dimension,
             num_words,
@@ -247,481 +240,608 @@ impl IndexEntry {
     }
 }
 
-/// Binary format reader/writer for retina files.
+/// Persisted parameters and word metadata. Version 1 files have no metadata.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct RetinaMetadata {
+    /// Fingerprint density and text aggregation policy.
+    pub fingerprint_config: crate::FingerprintConfig,
+    /// Tokenization policy used at inference.
+    pub text_config: crate::TextConfig,
+    /// Resolved training parameters and diagnostics, if known.
+    pub training_report: Option<crate::training::TrainingReport>,
+    /// Frequencies and POS tags, keyed in canonical word order.
+    pub word_metadata: std::collections::BTreeMap<String, (f64, Vec<String>)>,
+}
+
+impl RetinaMetadata {
+    fn validate(&self, header: &RetinaHeader) -> Result<()> {
+        self.fingerprint_config.validate()?;
+        if self
+            .word_metadata
+            .values()
+            .any(|(f, _)| !f.is_finite() || *f < 0.0 || *f > 1.0)
+        {
+            return Err(invalid("Invalid word frequency"));
+        }
+        if let Some(report) = &self.training_report {
+            report.config.validate()?;
+            if report.config.som.dimension != header.dimension as usize
+                || report.config.fingerprint != self.fingerprint_config
+                || report.config.text != self.text_config
+                || report.vocabulary != header.num_words as usize
+                || report.mapped_snippets > report.snippets
+                || report.occupied_cells > (header.dimension * header.dimension) as usize
+                || !report.quantization_error.is_finite()
+                || report.quantization_error < 0.0
+            {
+                return Err(invalid("Training metadata does not match retina"));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn invalid(message: &str) -> ProteusError {
+    ProteusError::InvalidRetinaFormat(message.into())
+}
+
+fn checked_slice(data: &[u8], start: u64, len: u64) -> Result<&[u8]> {
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| invalid("Offset overflow"))?;
+    let start = usize::try_from(start).map_err(|_| invalid("Offset out of range"))?;
+    let end = usize::try_from(end).map_err(|_| invalid("Offset out of range"))?;
+    data.get(start..end)
+        .ok_or_else(|| invalid("Section outside file"))
+}
+
+fn read_posting(
+    data: &[u8],
+    header: &RetinaHeader,
+    pos: u32,
+) -> Result<crate::roaring::RoaringBitmap> {
+    let grid = header.dimension * header.dimension;
+    if pos >= grid {
+        return Err(invalid("Posting position outside grid"));
+    }
+    let table = checked_slice(data, header.inverted_index_offset, u64::from(grid) * 8)?;
+    let row = &table[pos as usize * 8..pos as usize * 8 + 8];
+    let offset = u32::from_le_bytes(row[..4].try_into().unwrap());
+    let len = u32::from_le_bytes(row[4..].try_into().unwrap());
+    if len == 0 {
+        return Ok(crate::roaring::RoaringBitmap::new());
+    }
+    let bytes = checked_slice(
+        data,
+        header.inverted_index_offset + u64::from(grid) * 8 + u64::from(offset),
+        u64::from(len),
+    )?;
+    let mut reader = std::io::Cursor::new(bytes);
+    let bitmap = crate::roaring::RoaringBitmap::deserialize_from(&mut reader)?;
+    if reader.position() != bytes.len() as u64
+        || bitmap.max().is_some_and(|id| id >= header.num_words)
+    {
+        return Err(invalid("Invalid posting list"));
+    }
+    Ok(bitmap)
+}
+
+struct Parsed<'a> {
+    header: RetinaHeader,
+    entries: Vec<IndexEntry>,
+    words: Vec<String>,
+    metadata: RetinaMetadata,
+    data: &'a [u8],
+    inverted_index: Option<InvertedIndex>,
+}
+
+impl<'a> Parsed<'a> {
+    fn new(data: &'a [u8]) -> Result<Self> {
+        let header = RetinaHeader::from_bytes(data)?;
+        let index_len = u64::from(header.num_words) * IndexEntry::SIZE as u64;
+        if header.index_offset < HEADER_SIZE as u64
+            || header.index_offset.checked_add(index_len) != Some(header.fingerprint_offset)
+            || header.fingerprint_offset > header.string_pool_offset
+        {
+            return Err(invalid("Invalid section order or index size"));
+        }
+        let index = checked_slice(data, header.index_offset, index_len)?;
+        checked_slice(
+            data,
+            header.fingerprint_offset,
+            header.string_pool_offset - header.fingerprint_offset,
+        )?;
+        let string_end = if header.flags != 0 {
+            header.inverted_index_offset
+        } else {
+            data.len() as u64
+        };
+        let string_len = string_end
+            .checked_sub(header.string_pool_offset)
+            .ok_or_else(|| invalid("Invalid string/index section order"))?;
+        checked_slice(data, header.string_pool_offset, string_len)?;
+        if header.flags != 0 {
+            checked_slice(
+                data,
+                string_end,
+                (data.len() as u64)
+                    .checked_sub(string_end)
+                    .ok_or_else(|| invalid("Index outside file"))?,
+            )?;
+        }
+        let metadata = if header.has_metadata() {
+            let bytes = checked_slice(
+                data,
+                HEADER_SIZE as u64,
+                header.index_offset - HEADER_SIZE as u64,
+            )?;
+            let m: RetinaMetadata = serde_json::from_slice(bytes)
+                .map_err(|e| invalid(&format!("Invalid metadata: {e}")))?;
+            m.validate(&header)?;
+            m
+        } else {
+            if header.index_offset != HEADER_SIZE as u64 {
+                return Err(invalid("Invalid legacy index offset"));
+            }
+            RetinaMetadata::default()
+        };
+        let entries: Vec<_> = index
+            .chunks_exact(IndexEntry::SIZE)
+            .map(IndexEntry::from_bytes)
+            .collect();
+        let mut words = Vec::with_capacity(entries.len());
+        let mut seen = std::collections::HashSet::new();
+        for entry in &entries {
+            if u64::from(entry.string_offset) + u64::from(entry.string_len) > string_len {
+                return Err(invalid("Word outside string pool"));
+            }
+            let word = checked_slice(
+                data,
+                header.string_pool_offset + u64::from(entry.string_offset),
+                u64::from(entry.string_len),
+            )?;
+            let word = std::str::from_utf8(word)
+                .map_err(|_| invalid("Invalid UTF-8 word"))?
+                .to_owned();
+            if word.is_empty() || !seen.insert(word.clone()) {
+                return Err(invalid("Empty or duplicate word"));
+            }
+            let fp_end = u64::from(entry.fp_offset) + u64::from(entry.fp_len);
+            if fp_end > header.string_pool_offset - header.fingerprint_offset {
+                return Err(invalid("Fingerprint outside data section"));
+            }
+            words.push(word);
+        }
+        if header.has_metadata()
+            && (metadata.word_metadata.len() != words.len()
+                || words
+                    .iter()
+                    .any(|w| !metadata.word_metadata.contains_key(w)))
+        {
+            return Err(invalid("Word metadata and index differ"));
+        }
+        let mut parsed = Self {
+            header,
+            entries,
+            words,
+            metadata,
+            data,
+            inverted_index: None,
+        };
+        // Validate bitmap structure and universe before exposing either reader API.
+        for i in 0..parsed.entries.len() {
+            parsed.fingerprint(i)?;
+        }
+        if parsed.header.flags != 0 {
+            let mut fingerprints = HashMap::new();
+            for (i, word) in parsed.words.iter().enumerate() {
+                fingerprints.insert(
+                    word.clone(),
+                    WordFingerprint::new(
+                        word.clone(),
+                        &parsed.fingerprint(i)?.to_positions(),
+                        parsed.header.dimension * parsed.header.dimension,
+                    ),
+                );
+            }
+            let persisted = if parsed.header.has_inverted_index() {
+                let bytes = &data[parsed.header.inverted_index_offset as usize..];
+                bincode::DefaultOptions::new()
+                    .with_fixint_encoding()
+                    .with_limit(bytes.len() as u64)
+                    .reject_trailing_bytes()
+                    .deserialize::<InvertedIndex>(bytes)?
+            } else {
+                let mut postings = Vec::new();
+                for pos in 0..parsed.header.dimension * parsed.header.dimension {
+                    postings.push(read_posting(data, &parsed.header, pos)?);
+                }
+                InvertedIndex::from_postings(parsed.words.clone(), postings)
+            };
+            if !persisted.matches_fingerprints(
+                &fingerprints,
+                parsed.header.dimension * parsed.header.dimension,
+            ) {
+                return Err(invalid("Persisted index does not match fingerprints"));
+            }
+            parsed.inverted_index = Some(persisted);
+        }
+        Ok(parsed)
+    }
+
+    fn fingerprint(&self, i: usize) -> Result<Sdr> {
+        let entry = &self.entries[i];
+        let bytes = checked_slice(
+            self.data,
+            self.header.fingerprint_offset + u64::from(entry.fp_offset),
+            u64::from(entry.fp_len),
+        )?;
+        let mut reader = std::io::Cursor::new(bytes);
+        let bitmap = crate::roaring::RoaringBitmap::deserialize_from(&mut reader)
+            .map_err(|e| invalid(&format!("Invalid bitmap: {e}")))?;
+        if reader.position() != bytes.len() as u64
+            || bitmap
+                .max()
+                .is_some_and(|p| p >= self.header.dimension * self.header.dimension)
+        {
+            return Err(invalid(
+                "Bitmap has trailing bytes or out-of-grid positions",
+            ));
+        }
+        Ok(Sdr::from_bitmap(
+            bitmap,
+            self.header.dimension * self.header.dimension,
+        ))
+    }
+}
+
+/// Versioned, validated binary storage. New files preserve model metadata.
 pub struct RetinaFormat;
 
 impl RetinaFormat {
-    /// Writes fingerprints to a binary file (without inverted index).
+    /// Write a version 4 retina with default inference configuration.
     pub fn write<P: AsRef<Path>>(
         path: P,
         fingerprints: &HashMap<String, WordFingerprint>,
         dimension: u32,
     ) -> Result<()> {
-        Self::write_internal(path, fingerprints, dimension, None)
+        Self::write_with_metadata(path, fingerprints, dimension, RetinaMetadata::default())
     }
 
-    /// Writes fingerprints with an inverted index to a binary file.
+    /// Write atomically in canonical word order, preserving frequencies and configuration.
+    pub fn write_with_metadata<P: AsRef<Path>>(
+        path: P,
+        fingerprints: &HashMap<String, WordFingerprint>,
+        dimension: u32,
+        metadata: RetinaMetadata,
+    ) -> Result<()> {
+        Self::write_with_metadata_and_index(path, fingerprints, dimension, metadata, None)
+    }
+
+    /// Persist a canonical mmap index along with default inference metadata.
     pub fn write_with_index<P: AsRef<Path>>(
         path: P,
         fingerprints: &HashMap<String, WordFingerprint>,
         dimension: u32,
-        inverted_index: &InvertedIndex,
+        index: &InvertedIndex,
     ) -> Result<()> {
-        Self::write_internal(path, fingerprints, dimension, Some(inverted_index))
+        Self::write_with_metadata_and_index(
+            path,
+            fingerprints,
+            dimension,
+            RetinaMetadata::default(),
+            Some(index),
+        )
     }
 
-    fn write_internal<P: AsRef<Path>>(
+    /// Atomically persist metadata and an optional validated, canonical posting index.
+    pub fn write_with_metadata_and_index<P: AsRef<Path>>(
         path: P,
         fingerprints: &HashMap<String, WordFingerprint>,
         dimension: u32,
-        inverted_index: Option<&InvertedIndex>,
+        mut metadata: RetinaMetadata,
+        index: Option<&InvertedIndex>,
     ) -> Result<()> {
-        let file = File::create(path)?;
-        let mut writer = BufWriter::new(file);
-
-        let num_words = fingerprints.len() as u32;
-        let mut header = if inverted_index.is_some() {
-            RetinaHeader::new_with_index(dimension, num_words)
-        } else {
-            RetinaHeader::new(dimension, num_words)
-        };
-
-        // Calculate offsets
-        let index_size = (num_words as usize) * IndexEntry::SIZE;
-        header.fingerprint_offset = header.index_offset + index_size as u64;
-
-        // Collect all data
-        let mut entries: Vec<IndexEntry> = Vec::with_capacity(num_words as usize);
-        let mut string_pool = Vec::new();
-        let mut fp_data = Vec::new();
-
-        // Sort words for consistent ordering
-        let mut sorted_words: Vec<&String> = fingerprints.keys().collect();
-        sorted_words.sort();
-
-        for word in sorted_words {
+        if dimension == 0 || dimension.checked_mul(dimension).is_none() {
+            return Err(invalid("Invalid grid dimension"));
+        }
+        metadata.fingerprint_config.validate()?;
+        let num_words = u32::try_from(fingerprints.len()).map_err(|_| invalid("Too many words"))?;
+        let mut words: Vec<_> = fingerprints.keys().collect();
+        words.sort();
+        metadata.word_metadata.clear();
+        let mut entries = Vec::with_capacity(words.len());
+        let mut strings = Vec::new();
+        let mut bitmaps = Vec::new();
+        for word in words {
             let wf = &fingerprints[word];
-
-            // Serialize fingerprint
-            let mut fp_bytes = Vec::new();
-            wf.fingerprint.bitmap().serialize_into(&mut fp_bytes)
-                .map_err(|e| ProteusError::Serialization(e.to_string()))?;
-            let fp_offset = fp_data.len() as u32;
-            let fp_len = fp_bytes.len() as u16;
-            fp_data.extend(fp_bytes);
-
-            // Add string to pool
-            let string_offset = string_pool.len() as u32;
-            let string_len = word.len() as u16;
-            string_pool.extend(word.as_bytes());
-
+            if word.is_empty()
+                || &wf.word != word
+                || wf.fingerprint.size() != dimension * dimension
+                || wf.fingerprint.iter().any(|p| p >= dimension * dimension)
+                || !wf.frequency.is_finite()
+                || !(0.0..=1.0).contains(&wf.frequency)
+            {
+                return Err(invalid("Invalid word fingerprint or frequency"));
+            }
+            let mut bytes = Vec::new();
+            wf.fingerprint.bitmap().serialize_into(&mut bytes)?;
             entries.push(IndexEntry {
-                string_offset,
-                string_len,
-                fp_offset,
-                fp_len,
+                string_offset: u32::try_from(strings.len())
+                    .map_err(|_| invalid("String pool exceeds 4 GiB"))?,
+                string_len: u16::try_from(word.len())
+                    .map_err(|_| invalid("Word exceeds 65535 bytes"))?,
+                fp_offset: u32::try_from(bitmaps.len())
+                    .map_err(|_| invalid("Bitmap section exceeds 4 GiB"))?,
+                fp_len: u16::try_from(bytes.len())
+                    .map_err(|_| invalid("Bitmap exceeds 65535 bytes"))?,
             });
+            strings.extend_from_slice(word.as_bytes());
+            bitmaps.extend_from_slice(&bytes);
+            metadata
+                .word_metadata
+                .insert(word.clone(), (wf.frequency, wf.pos_tags.clone()));
         }
-
-        header.string_pool_offset = header.fingerprint_offset + fp_data.len() as u64;
-
-        // Build mmap-friendly inverted index if requested
-        let (index_offset_table, index_posting_data) = if let Some(idx) = inverted_index {
-            header.inverted_index_offset = header.string_pool_offset + string_pool.len() as u64;
-            Self::build_mmap_index(idx)?
-        } else {
-            (Vec::new(), Vec::new())
-        };
-
-        // Write header
-        writer.write_all(&header.to_bytes())?;
-
-        // Write index
-        for entry in &entries {
-            writer.write_all(&entry.to_bytes())?;
+        let meta = serde_json::to_vec(&metadata).map_err(|e| invalid(&e.to_string()))?;
+        let mut header = RetinaHeader::new(dimension, num_words);
+        header.index_offset = HEADER_SIZE as u64 + meta.len() as u64;
+        header.fingerprint_offset =
+            header.index_offset + entries.len() as u64 * IndexEntry::SIZE as u64;
+        header.string_pool_offset = header.fingerprint_offset + bitmaps.len() as u64;
+        metadata.validate(&header)?;
+        let mut index_table = Vec::new();
+        let mut index_data = Vec::new();
+        if let Some(index) = index {
+            if !index.matches_fingerprints(fingerprints, dimension * dimension) {
+                return Err(invalid("Index does not match fingerprints"));
+            }
+            header.flags = 2;
+            header.inverted_index_offset = header.string_pool_offset + strings.len() as u64;
+            for posting in index.posting_lists_iter() {
+                let offset = u32::try_from(index_data.len())
+                    .map_err(|_| invalid("Posting index exceeds 4 GiB"))?;
+                let mut bytes = Vec::new();
+                if !posting.is_empty() {
+                    posting.serialize_into(&mut bytes)?;
+                }
+                let len =
+                    u32::try_from(bytes.len()).map_err(|_| invalid("Posting list too large"))?;
+                index_table.extend_from_slice(&offset.to_le_bytes());
+                index_table.extend_from_slice(&len.to_le_bytes());
+                index_data.extend_from_slice(&bytes);
+            }
         }
-
-        // Write fingerprint data
-        writer.write_all(&fp_data)?;
-
-        // Write string pool
-        writer.write_all(&string_pool)?;
-
-        // Write mmap-friendly inverted index if present
-        if !index_offset_table.is_empty() {
-            // Write offset table
-            writer.write_all(&index_offset_table)?;
-            // Write posting list data
-            writer.write_all(&index_posting_data)?;
+        let path = path.as_ref();
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+        tmp.write_all(&header.to_bytes())?;
+        tmp.write_all(&meta)?;
+        for entry in entries {
+            tmp.write_all(&entry.to_bytes())?;
         }
-
-        writer.flush()?;
+        tmp.write_all(&bitmaps)?;
+        tmp.write_all(&strings)?;
+        tmp.write_all(&index_table)?;
+        tmp.write_all(&index_data)?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(path).map_err(|e| ProteusError::Io(e.error))?;
         Ok(())
     }
 
-    /// Builds mmap-friendly inverted index data.
-    ///
-    /// Returns (offset_table, posting_data) where:
-    /// - offset_table: grid_size * 8 bytes, each entry is (offset: u32, len: u32)
-    /// - posting_data: concatenated serialized RoaringBitmaps
-    fn build_mmap_index(idx: &InvertedIndex) -> Result<(Vec<u8>, Vec<u8>)> {
-        let grid_size = idx.grid_size() as usize;
-
-        let mut offset_table = Vec::with_capacity(grid_size * 8);
-        let mut posting_data = Vec::new();
-
-        for bitmap in idx.posting_lists_iter() {
-            if bitmap.is_empty() {
-                // Empty posting list
-                offset_table.extend_from_slice(&0u32.to_le_bytes());
-                offset_table.extend_from_slice(&0u32.to_le_bytes());
-            } else {
-                let offset = posting_data.len() as u32;
-
-                bitmap
-                    .serialize_into(&mut posting_data)
-                    .map_err(|e| ProteusError::Serialization(e.to_string()))?;
-
-                let len = posting_data.len() as u32 - offset;
-                offset_table.extend_from_slice(&offset.to_le_bytes());
-                offset_table.extend_from_slice(&len.to_le_bytes());
-            }
-        }
-
-        Ok((offset_table, posting_data))
-    }
-
-    /// Reads fingerprints from a binary file (without loading inverted index).
-    pub fn read<P: AsRef<Path>>(path: P) -> Result<(RetinaHeader, HashMap<String, WordFingerprint>)> {
-        let (header, fingerprints, _) = Self::read_with_index(path)?;
+    /// Read version 1 or 2 fingerprints. Version 1 has unknown frequencies (zero).
+    pub fn read<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(RetinaHeader, HashMap<String, WordFingerprint>)> {
+        let (header, fingerprints, _) = Self::read_with_metadata(path)?;
         Ok((header, fingerprints))
     }
 
-    /// Reads fingerprints and inverted index from a binary file.
-    ///
-    /// Returns (header, fingerprints, optional inverted index).
-    pub fn read_with_index<P: AsRef<Path>>(
+    /// Read all fingerprints and the saved inference/training parameters.
+    pub fn read_with_metadata<P: AsRef<Path>>(
         path: P,
-    ) -> Result<(RetinaHeader, HashMap<String, WordFingerprint>, Option<InvertedIndex>)> {
-        let mut file = File::open(path)?;
-
-        // Read header
-        let mut header_bytes = [0u8; HEADER_SIZE];
-        file.read_exact(&mut header_bytes)?;
-        let header = RetinaHeader::from_bytes(&header_bytes)?;
-
-        // Read index
-        file.seek(SeekFrom::Start(header.index_offset))?;
-        let index_size = (header.num_words as usize) * IndexEntry::SIZE;
-        let mut index_bytes = vec![0u8; index_size];
-        file.read_exact(&mut index_bytes)?;
-
-        let entries: Vec<IndexEntry> = index_bytes
-            .chunks_exact(IndexEntry::SIZE)
-            .map(IndexEntry::from_bytes)
-            .collect();
-
-        // Read fingerprint data
-        file.seek(SeekFrom::Start(header.fingerprint_offset))?;
-        let fp_size = (header.string_pool_offset - header.fingerprint_offset) as usize;
-        let mut fp_data = vec![0u8; fp_size];
-        file.read_exact(&mut fp_data)?;
-
-        // Read string pool (calculate size based on whether inverted index is present)
-        file.seek(SeekFrom::Start(header.string_pool_offset))?;
-        let string_pool_size = if header.has_inverted_index() {
-            (header.inverted_index_offset - header.string_pool_offset) as usize
-        } else {
-            // Read to end of file
-            let file_size = file.seek(SeekFrom::End(0))?;
-            file.seek(SeekFrom::Start(header.string_pool_offset))?;
-            (file_size - header.string_pool_offset) as usize
-        };
-        let mut string_pool = vec![0u8; string_pool_size];
-        file.read_exact(&mut string_pool)?;
-
-        // Reconstruct fingerprints
-        let grid_size = header.dimension * header.dimension;
-        let mut fingerprints = HashMap::with_capacity(header.num_words as usize);
-
-        for entry in entries {
-            // Extract word
-            let start = entry.string_offset as usize;
-            let end = start + entry.string_len as usize;
-            let word = String::from_utf8_lossy(&string_pool[start..end]).to_string();
-
-            // Extract fingerprint
-            let fp_start = entry.fp_offset as usize;
-            let fp_end = fp_start + entry.fp_len as usize;
-            let bitmap =
-                crate::roaring::RoaringBitmap::deserialize_unchecked_from(&fp_data[fp_start..fp_end])
-                    .map_err(|e| ProteusError::Serialization(e.to_string()))?;
-
-            let sdr = Sdr::from_bitmap(bitmap, grid_size);
-            let wf = WordFingerprint {
-                word: word.clone(),
-                fingerprint: sdr,
-                frequency: 0.0,
-                pos_tags: Vec::new(),
-            };
-
-            fingerprints.insert(word, wf);
-        }
-
-        // Read inverted index if present
-        let inverted_index = if header.has_inverted_index() {
-            file.seek(SeekFrom::Start(header.inverted_index_offset))?;
-            let mut index_data = Vec::new();
-            file.read_to_end(&mut index_data)?;
-            Some(bincode::deserialize(&index_data)?)
-        } else {
-            None
-        };
-
-        Ok((header, fingerprints, inverted_index))
+    ) -> Result<(
+        RetinaHeader,
+        HashMap<String, WordFingerprint>,
+        RetinaMetadata,
+    )> {
+        let (header, fingerprints, metadata, _) = Self::read_full(path)?;
+        Ok((header, fingerprints, metadata))
     }
 
-    /// Memory-maps a retina file for fast access.
+    /// Read a persisted index, if present.
+    pub fn read_with_index<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(
+        RetinaHeader,
+        HashMap<String, WordFingerprint>,
+        Option<InvertedIndex>,
+    )> {
+        let (header, fingerprints, _, index) = Self::read_full(path)?;
+        Ok((header, fingerprints, index))
+    }
+
+    /// Read all model state and validate that a persisted index matches the bitmaps.
+    pub fn read_full<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<(
+        RetinaHeader,
+        HashMap<String, WordFingerprint>,
+        RetinaMetadata,
+        Option<InvertedIndex>,
+    )> {
+        let data = std::fs::read(path)?;
+        let parsed = Parsed::new(&data)?;
+        let mut fingerprints = HashMap::with_capacity(parsed.entries.len());
+        for (i, word) in parsed.words.iter().enumerate() {
+            let (frequency, pos_tags) = parsed
+                .metadata
+                .word_metadata
+                .get(word)
+                .cloned()
+                .unwrap_or_default();
+            fingerprints.insert(
+                word.clone(),
+                WordFingerprint {
+                    word: word.clone(),
+                    fingerprint: parsed.fingerprint(i)?,
+                    frequency,
+                    pos_tags,
+                },
+            );
+        }
+        Ok((
+            parsed.header,
+            fingerprints,
+            parsed.metadata,
+            parsed.inverted_index,
+        ))
+    }
+
+    /// Open a validated memory map.
     pub fn mmap<P: AsRef<Path>>(path: P) -> Result<MmappedRetina> {
         MmappedRetina::open(path)
     }
 }
 
-/// A memory-mapped retina for instant loading.
-///
-/// Uses binary search on sorted words for O(log n) lookup without
-/// building a HashMap. The inverted index is accessed lazily.
+/// A memory-mapped retina; bitmap values are decoded on demand after validation.
 pub struct MmappedRetina {
     mmap: Mmap,
     header: RetinaHeader,
+    entries: Vec<IndexEntry>,
+    words: Vec<String>,
+    word_index: HashMap<String, usize>,
+    text_config: crate::TextConfig,
+    legacy_index: Option<InvertedIndex>,
 }
 
 impl MmappedRetina {
-    /// Opens a retina file and memory-maps it.
-    ///
-    /// This is O(1) - no data structures are built at load time.
+    /// Validate the file before exposing indexed or word-based access.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file = File::open(path)?;
+        // SAFETY: the backing file must not be modified while mapped, as with all
+        // memmap2 users. Atomic saves replace the file rather than modifying it.
         let mmap = unsafe { MmapOptions::new().map(&file)? };
-
-        // Parse header
-        let header = RetinaHeader::from_bytes(&mmap[0..HEADER_SIZE])?;
-
-        Ok(Self { mmap, header })
+        let parsed = Parsed::new(&mmap)?;
+        let word_index = parsed
+            .words
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (w.clone(), i))
+            .collect();
+        let text_config = parsed.metadata.text_config;
+        let legacy_index = if parsed.header.has_inverted_index() {
+            parsed.inverted_index
+        } else {
+            None
+        };
+        let header = parsed.header;
+        let entries = parsed.entries;
+        let words = parsed.words;
+        Ok(Self {
+            mmap,
+            header,
+            entries,
+            words,
+            word_index,
+            text_config,
+            legacy_index,
+        })
     }
-
-    /// Gets the word at a given index.
-    fn get_word_at_index(&self, idx: usize) -> Option<String> {
-        if idx >= self.header.num_words as usize {
-            return None;
-        }
-
-        let index_start = self.header.index_offset as usize;
-        let entry_start = index_start + idx * IndexEntry::SIZE;
-        let entry = IndexEntry::from_bytes(&self.mmap[entry_start..entry_start + IndexEntry::SIZE]);
-
-        let str_start = self.header.string_pool_offset as usize + entry.string_offset as usize;
-        let str_end = str_start + entry.string_len as usize;
-
-        Some(String::from_utf8_lossy(&self.mmap[str_start..str_end]).to_string())
-    }
-
-    /// Binary search for a word in the sorted index.
-    fn find_word_index(&self, word: &str) -> Option<usize> {
-        let num_words = self.header.num_words as usize;
-        if num_words == 0 {
-            return None;
-        }
-
-        let mut left = 0;
-        let mut right = num_words;
-
-        while left < right {
-            let mid = left + (right - left) / 2;
-            let mid_word = self.get_word_at_index(mid)?;
-
-            match mid_word.as_str().cmp(word) {
-                std::cmp::Ordering::Equal => return Some(mid),
-                std::cmp::Ordering::Less => left = mid + 1,
-                std::cmp::Ordering::Greater => right = mid,
-            }
-        }
-
-        None
-    }
-
-    /// Returns the header.
+    /// Parsed header.
     pub fn header(&self) -> &RetinaHeader {
         &self.header
     }
-
-    /// Returns the number of words.
+    /// Vocabulary size.
     pub fn len(&self) -> usize {
-        self.header.num_words as usize
+        self.words.len()
     }
-
-    /// Checks if the retina is empty.
+    /// Whether there are no words.
     pub fn is_empty(&self) -> bool {
-        self.header.num_words == 0
+        self.words.is_empty()
     }
-
-    /// Checks if a word exists.
+    /// Exact, normalized-key lookup.
     pub fn contains(&self, word: &str) -> bool {
-        self.find_word_index(word).is_some()
+        self.word_index.contains_key(word)
     }
-
-    /// Gets a word's fingerprint.
+    /// Decode a fingerprint by word.
     pub fn get(&self, word: &str) -> Option<Sdr> {
-        let idx = self.find_word_index(word)?;
-        self.get_by_index(idx)
+        self.get_by_index(*self.word_index.get(word)?)
     }
-
-    /// Gets a fingerprint by index.
+    /// Decode a fingerprint by index.
     pub fn get_by_index(&self, idx: usize) -> Option<Sdr> {
-        if idx >= self.header.num_words as usize {
-            return None;
-        }
-
-        let index_start = self.header.index_offset as usize;
-        let entry_start = index_start + idx * IndexEntry::SIZE;
-        let entry = IndexEntry::from_bytes(&self.mmap[entry_start..entry_start + IndexEntry::SIZE]);
-
-        let fp_start = self.header.fingerprint_offset as usize + entry.fp_offset as usize;
-        let fp_end = fp_start + entry.fp_len as usize;
-
-        let bitmap = crate::roaring::RoaringBitmap::deserialize_unchecked_from(&self.mmap[fp_start..fp_end])
-            .ok()?;
-
-        let grid_size = self.header.dimension * self.header.dimension;
-        Some(Sdr::from_bitmap(bitmap, grid_size))
+        let entry = self.entries.get(idx)?;
+        let bytes = checked_slice(
+            &self.mmap,
+            self.header.fingerprint_offset + u64::from(entry.fp_offset),
+            u64::from(entry.fp_len),
+        )
+        .ok()?;
+        let bitmap = crate::roaring::RoaringBitmap::deserialize_from(bytes).ok()?;
+        Some(Sdr::from_bitmap(
+            bitmap,
+            self.header.dimension * self.header.dimension,
+        ))
     }
-
-    /// Gets a word by index.
+    /// Read a word by index.
     pub fn get_word(&self, idx: usize) -> Option<String> {
-        if idx >= self.header.num_words as usize {
-            return None;
-        }
-
-        let index_start = self.header.index_offset as usize;
-        let entry_start = index_start + idx * IndexEntry::SIZE;
-        let entry = IndexEntry::from_bytes(&self.mmap[entry_start..entry_start + IndexEntry::SIZE]);
-
-        let str_start = self.header.string_pool_offset as usize + entry.string_offset as usize;
-        let str_end = str_start + entry.string_len as usize;
-
-        Some(String::from_utf8_lossy(&self.mmap[str_start..str_end]).to_string())
+        self.words.get(idx).cloned()
     }
-
-    /// Returns the number of words (vocabulary size).
+    /// Iterate word keys.
+    pub fn words(&self) -> impl Iterator<Item = &String> {
+        self.word_index.keys()
+    }
+    /// Number of vocabulary entries.
     pub fn num_words(&self) -> usize {
-        self.header.num_words as usize
+        self.len()
     }
-
-    /// Returns true if the retina has an inverted index for fast similarity search.
+    /// Grid side length.
+    pub fn dimension(&self) -> u32 {
+        self.header.dimension
+    }
+    /// Whether the file includes a persisted posting index.
     pub fn has_inverted_index(&self) -> bool {
-        self.header.has_mmap_index() || self.header.has_inverted_index()
+        self.header.flags != 0
     }
-
-    /// Gets a posting list from the mmap-friendly index (lazy loading).
-    fn get_posting_list(&self, position: u32) -> Option<crate::roaring::RoaringBitmap> {
-        if !self.header.has_mmap_index() {
-            return None;
-        }
-
-        let grid_size = self.header.dimension * self.header.dimension;
-        if position >= grid_size {
-            return None;
-        }
-
-        // The mmap-friendly index starts at inverted_index_offset
-        // Format: offset_table (grid_size * 8 bytes) + posting_data
-        let index_start = self.header.inverted_index_offset as usize;
-        let entry_offset = index_start + (position as usize) * 8;
-
-        if entry_offset + 8 > self.mmap.len() {
-            return None;
-        }
-
-        let offset = u32::from_le_bytes([
-            self.mmap[entry_offset],
-            self.mmap[entry_offset + 1],
-            self.mmap[entry_offset + 2],
-            self.mmap[entry_offset + 3],
-        ]) as usize;
-        let len = u32::from_le_bytes([
-            self.mmap[entry_offset + 4],
-            self.mmap[entry_offset + 5],
-            self.mmap[entry_offset + 6],
-            self.mmap[entry_offset + 7],
-        ]) as usize;
-
-        if len == 0 {
-            return Some(crate::roaring::RoaringBitmap::new());
-        }
-
-        // Data starts after the offset table
-        let data_offset = index_start + (grid_size as usize) * 8;
-        let data_start = data_offset + offset;
-        let data_end = data_start + len;
-
-        if data_end > self.mmap.len() {
-            return None;
-        }
-
-        crate::roaring::RoaringBitmap::deserialize_unchecked_from(&self.mmap[data_start..data_end]).ok()
-    }
-
-    /// Finds words similar to a given word using the inverted index.
-    ///
-    /// Returns up to `k` (word, similarity) pairs sorted by similarity.
-    /// Returns None if the word is not found or no inverted index is available.
+    /// Exact cosine search using all posting candidates and deterministic ties.
     pub fn find_similar(&self, word: &str, k: usize) -> Option<Vec<(String, f64)>> {
-        if !self.header.has_mmap_index() {
+        if !self.has_inverted_index() {
             return None;
         }
-
-        let target_fp = self.get(word)?;
-
-        // Search using lazy loading of posting lists
-        let mut word_scores: HashMap<u32, u32> = HashMap::new();
-
-        for pos in target_fp.iter() {
-            if let Some(posting_list) = self.get_posting_list(pos) {
-                for word_idx in posting_list.iter() {
-                    *word_scores.entry(word_idx).or_insert(0) += 1;
+        let tokens = crate::Tokenizer::new(self.text_config.clone()).tokenize_to_strings(word);
+        if tokens.len() != 1 {
+            return None;
+        }
+        let word = &tokens[0];
+        let target = self.get(word)?;
+        let mut candidates = std::collections::BTreeSet::new();
+        for pos in target.iter() {
+            if let Some(index) = &self.legacy_index {
+                for w in index.words_at_position(pos) {
+                    candidates.insert(*self.word_index.get(&w)?);
+                }
+            } else {
+                for id in read_posting(&self.mmap, &self.header, pos).ok()?.iter() {
+                    candidates.insert(id as usize);
                 }
             }
         }
-
-        // Get top candidates by overlap count
-        let mut sorted: Vec<(u32, u32)> = word_scores.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
-        sorted.truncate(k * 10);
-
-        // Compute actual cosine similarity for candidates
-        let mut results: Vec<(String, f64)> = sorted
+        candidates.remove(self.word_index.get(word)?);
+        if candidates.len() < k {
+            candidates.extend((0..self.len()).filter(|&i| self.words[i] != *word));
+        }
+        let mut results: Vec<_> = candidates
             .into_iter()
-            .filter_map(|(word_idx, _)| {
-                let candidate_word = self.get_word_at_index(word_idx as usize)?;
-                if candidate_word == word {
-                    return None;
-                }
-                let fp = self.get_by_index(word_idx as usize)?;
-                let sim = target_fp.cosine_similarity(&fp);
-                Some((candidate_word, sim))
+            .filter_map(|i| {
+                self.get_by_index(i)
+                    .map(|fp| (self.words[i].clone(), target.cosine_similarity(&fp)))
             })
             .collect();
-
-        // Sort by similarity descending
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         results.truncate(k);
-
         Some(results)
-    }
-
-    /// Returns the grid dimension.
-    pub fn dimension(&self) -> u32 {
-        self.header.dimension
     }
 }
 

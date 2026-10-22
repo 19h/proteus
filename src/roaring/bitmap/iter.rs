@@ -259,7 +259,7 @@ impl Iter<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     /// use core::iter::FromIterator;
     ///
     /// let bitmap = (1..3).collect::<RoaringBitmap>();
@@ -278,7 +278,7 @@ impl Iter<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     /// use core::iter::FromIterator;
     ///
     /// let bitmap = (1..3).collect::<RoaringBitmap>();
@@ -300,7 +300,7 @@ impl Iter<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let bm = RoaringBitmap::from([1, 2, 4, 5]);
     /// let mut iter = bm.iter();
@@ -320,7 +320,7 @@ impl Iter<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let bm = RoaringBitmap::from([1, 2, 4, 5]);
     /// let mut iter = bm.iter();
@@ -347,7 +347,7 @@ impl IntoIter {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     /// use core::iter::FromIterator;
     ///
     /// let bitmap = (1..3).collect::<RoaringBitmap>();
@@ -366,7 +366,7 @@ impl IntoIter {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     /// use core::iter::FromIterator;
     ///
     /// let bitmap = (1..3).collect::<RoaringBitmap>();
@@ -388,7 +388,7 @@ impl IntoIter {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let bm = RoaringBitmap::from([1, 2, 4, 5]);
     /// let mut iter = bm.into_iter();
@@ -408,7 +408,7 @@ impl IntoIter {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let bm = RoaringBitmap::from([1, 2, 4, 5]);
     /// let mut iter = bm.into_iter();
@@ -722,7 +722,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     /// use core::iter::FromIterator;
     ///
     /// let bitmap = (1..3).collect::<RoaringBitmap>();
@@ -742,7 +742,7 @@ impl RoaringBitmap {
     ///
     /// ```rust
     /// use core::ops::Bound;
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let bitmap = RoaringBitmap::from([0, 1, 2, 3, 4, 5, 10, 11, 12, 20, 21, u32::MAX]);
     /// let mut iter = bitmap.range(10..20);
@@ -796,7 +796,7 @@ impl RoaringBitmap {
     ///
     /// ```rust
     /// use core::ops::Bound;
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// fn bitmap() -> RoaringBitmap {
     ///     RoaringBitmap::from([0, 1, 2, 3, 4, 5, 10, 11, 12, 20, 21, u32::MAX])
@@ -898,7 +898,7 @@ impl Extend<u32> for RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// rb.extend([1, 2, 3, 4, 1500, 1508, 1507, 1509]);
@@ -944,7 +944,7 @@ impl<'a> Extend<&'a u32> for RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// rb.extend([1, 2, 3, 4, 1500, 1508, 1507, 1509]);
@@ -971,7 +971,7 @@ impl RoaringBitmap {
     /// # Example: Create a set from an ordered list of integers.
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::from_sorted_iter(0..10).unwrap();
     ///
@@ -981,7 +981,7 @@ impl RoaringBitmap {
     /// # Example: Try to create a set from a non-ordered list of integers.
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let integers = 0..10u32;
     /// let error = RoaringBitmap::from_sorted_iter(integers.rev()).unwrap_err();
@@ -1007,7 +1007,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// assert_eq!(rb.append(0..10), Ok(10));

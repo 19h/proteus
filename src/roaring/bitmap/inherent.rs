@@ -17,7 +17,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     /// let rb = RoaringBitmap::new();
     /// ```
     pub fn new() -> RoaringBitmap {
@@ -29,7 +29,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     /// let rb = RoaringBitmap::full();
     /// ```
     pub fn full() -> RoaringBitmap {
@@ -58,7 +58,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let bytes = [0b00000101, 0b00000010, 0b00000000, 0b10000000];
     /// //             ^^^^^^^^    ^^^^^^^^    ^^^^^^^^    ^^^^^^^^
@@ -176,7 +176,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// assert_eq!(rb.insert(3), true);
@@ -242,7 +242,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// rb.insert_range(2..4);
@@ -305,7 +305,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// assert!(rb.push(1));
@@ -328,7 +328,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::{RoaringBitmap, IntegerTooSmall};
+    /// use proteus::roaring::{RoaringBitmap, IntegerTooSmall};
     ///
     /// let mut rb = RoaringBitmap::new();
     /// assert!(rb.try_push(1).is_ok());
@@ -388,7 +388,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// rb.insert(3);
@@ -420,7 +420,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// rb.insert(2);
@@ -463,7 +463,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// rb.insert(1);
@@ -485,7 +485,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// // An empty range is always contained
@@ -546,7 +546,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// rb.insert_range(0x10000..0x40000);
@@ -612,7 +612,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// rb.insert(1);
@@ -630,7 +630,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// assert_eq!(rb.is_empty(), true);
@@ -648,7 +648,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::full();
     /// assert!(!rb.is_empty());
@@ -665,7 +665,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// assert_eq!(rb.len(), 0);
@@ -687,7 +687,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// assert_eq!(rb.min(), None);
@@ -706,7 +706,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// assert_eq!(rb.max(), None);
@@ -725,7 +725,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// assert_eq!(rb.rank(0), 0);
@@ -758,7 +758,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::new();
     /// assert_eq!(rb.select(0), None);
@@ -793,7 +793,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::from_iter([1, 5, 7, 9]);
     /// rb.remove_smallest(2);
@@ -830,7 +830,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::from_iter([1, 5, 7, 9]);
     /// rb.remove_biggest(2);
@@ -866,7 +866,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::from_iter(1000..100000);
     /// rb.optimize();
@@ -886,7 +886,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut rb = RoaringBitmap::from_iter(0..=10000);
     /// rb.optimize();

@@ -18,7 +18,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let rb1: RoaringBitmap = (1..4).collect();
     /// let rb2: RoaringBitmap = (3..5).collect();
@@ -45,7 +45,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let rb1: RoaringBitmap = (1..4).collect();
     /// let rb2: RoaringBitmap = (3..5).collect();
@@ -66,7 +66,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let rb1: RoaringBitmap = (1..4).collect();
     /// let rb2: RoaringBitmap = (3..5).collect();
@@ -87,7 +87,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let rb1: RoaringBitmap = (1..4).collect();
     /// let rb2: RoaringBitmap = (3..5).collect();

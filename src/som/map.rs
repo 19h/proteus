@@ -116,7 +116,7 @@ impl Som {
     /// The BMU is the neuron whose weight vector is closest to the input.
     /// Returns the index of the BMU.
     pub fn find_bmu(&self, input: &[f64]) -> Result<usize> {
-        if input.len() != self.weight_dim {
+        if input.len() != self.weight_dim || input.iter().any(|x| !x.is_finite()) {
             return Err(ProteusError::Som(format!(
                 "Input dimension {} does not match weight dimension {}",
                 input.len(),
@@ -131,7 +131,7 @@ impl Som {
             .min_by(|(_, a), (_, b)| {
                 let dist_a = a.distance_squared(input);
                 let dist_b = b.distance_squared(input);
-                dist_a.partial_cmp(&dist_b).unwrap()
+                dist_a.total_cmp(&dist_b)
             })
             .ok_or_else(|| ProteusError::Som("Empty SOM".to_string()))?;
 
@@ -142,7 +142,7 @@ impl Som {
     ///
     /// More efficient for large maps.
     pub fn find_bmu_parallel(&self, input: &[f64]) -> Result<usize> {
-        if input.len() != self.weight_dim {
+        if input.len() != self.weight_dim || input.iter().any(|x| !x.is_finite()) {
             return Err(ProteusError::Som(format!(
                 "Input dimension {} does not match weight dimension {}",
                 input.len(),
@@ -154,10 +154,10 @@ impl Som {
             .neurons
             .par_iter()
             .enumerate()
-            .min_by(|(_, a), (_, b)| {
+            .min_by(|(ia, a), (ib, b)| {
                 let dist_a = a.distance_squared(input);
                 let dist_b = b.distance_squared(input);
-                dist_a.partial_cmp(&dist_b).unwrap()
+                dist_a.total_cmp(&dist_b).then(ia.cmp(ib))
             })
             .ok_or_else(|| ProteusError::Som("Empty SOM".to_string()))?;
 
@@ -168,7 +168,7 @@ impl Som {
     ///
     /// Returns a vector of (index, distance) pairs, sorted by distance.
     pub fn find_k_nearest(&self, input: &[f64], k: usize) -> Result<Vec<(usize, f64)>> {
-        if input.len() != self.weight_dim {
+        if input.len() != self.weight_dim || input.iter().any(|x| !x.is_finite()) {
             return Err(ProteusError::Som(format!(
                 "Input dimension {} does not match weight dimension {}",
                 input.len(),
@@ -183,7 +183,7 @@ impl Som {
             .map(|(i, n)| (i, n.distance(input)))
             .collect();
 
-        distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        distances.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
         distances.truncate(k);
 
         Ok(distances)
@@ -213,12 +213,8 @@ impl Som {
         for neuron in &mut self.neurons {
             let grid_dist = bmu.grid_distance(neuron, self.dimension, self.toroidal);
 
-            // Only update neurons within a reasonable distance (optimization)
-            if grid_dist <= radius * 3.0 {
-                let sigma_sq = radius * radius;
-                let neighborhood = (-grid_dist * grid_dist / (2.0 * sigma_sq)).exp();
-                neuron.update_weights(input, learning_rate, neighborhood);
-            }
+            let neighborhood = (-0.5 * (grid_dist / radius).powi(2)).exp();
+            neuron.update_weights(input, learning_rate, neighborhood);
         }
     }
 

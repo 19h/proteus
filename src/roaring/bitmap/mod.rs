@@ -25,7 +25,7 @@ pub use self::statistics::Statistics;
 /// # Examples
 ///
 /// ```rust
-/// use roaring::RoaringBitmap;
+/// use proteus::roaring::RoaringBitmap;
 ///
 /// let mut rb = RoaringBitmap::new();
 ///

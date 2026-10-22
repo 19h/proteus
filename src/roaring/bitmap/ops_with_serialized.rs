@@ -25,7 +25,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     /// use std::io::Cursor;
     ///
     /// let rb1: RoaringBitmap = (1..4).collect();

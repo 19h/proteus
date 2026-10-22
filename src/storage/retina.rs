@@ -1,11 +1,13 @@
 //! Retina management - the core semantic fingerprint database.
 
 use crate::config::FingerprintConfig;
+use crate::config::TextConfig;
 use crate::error::{ProteusError, Result};
 use crate::fingerprint::{Sdr, TextFingerprinter, WordFingerprint, WordFingerprinter};
 use crate::index::InvertedIndex;
 use crate::similarity::{CosineSimilarity, SimilarityMeasure};
 use crate::storage::format::RetinaFormat;
+use crate::training::TrainingReport;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -25,6 +27,8 @@ pub struct Retina {
     dimension: u32,
     /// Configuration.
     config: FingerprintConfig,
+    text_config: TextConfig,
+    training_report: Option<TrainingReport>,
 }
 
 impl Retina {
@@ -46,6 +50,8 @@ impl Retina {
             inverted_index: None,
             dimension,
             config,
+            text_config: TextConfig::default(),
+            training_report: None,
         }
     }
 
@@ -58,7 +64,7 @@ impl Retina {
         let grid_size = dimension * dimension;
         let mut word_fingerprinter = WordFingerprinter::new(config.clone(), grid_size);
 
-        for (_, fp) in &fingerprints {
+        for fp in fingerprints.values() {
             word_fingerprinter.insert(fp.clone());
         }
 
@@ -70,53 +76,62 @@ impl Retina {
             inverted_index: Some(inverted_index),
             dimension,
             config,
+            text_config: TextConfig::default(),
+            training_report: None,
         }
     }
 
     /// Loads a retina from a binary file.
-    ///
-    /// If the file contains a persisted inverted index, it will be loaded directly.
-    /// Otherwise, the index will be built from the fingerprints.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let (header, fingerprints, inverted_index) = RetinaFormat::read_with_index(path)?;
-
-        let grid_size = header.dimension * header.dimension;
-        let config = FingerprintConfig::default();
-        let mut word_fingerprinter = WordFingerprinter::new(config.clone(), grid_size);
-
-        for (_, fp) in &fingerprints {
-            word_fingerprinter.insert(fp.clone());
+        let (header, fingerprints, metadata, index) = RetinaFormat::read_full(path)?;
+        let mut retina = Self::new(fingerprints, header.dimension, metadata.fingerprint_config);
+        retina.text_config = metadata.text_config;
+        retina.training_report = metadata.training_report;
+        retina.inverted_index = index;
+        if retina.inverted_index.is_none() {
+            retina.build_index();
         }
-
-        // Use persisted index if available, otherwise build one
-        let inverted_index = match inverted_index {
-            Some(idx) => idx,
-            None => InvertedIndex::from_fingerprints(&fingerprints, grid_size),
-        };
-
-        Ok(Self {
-            word_fingerprinter,
-            inverted_index: Some(inverted_index),
-            dimension: header.dimension,
-            config,
-        })
+        Ok(retina)
     }
 
     /// Saves the retina to a binary file.
-    ///
-    /// If an inverted index is present, it will be persisted for fast loading.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let fingerprints: HashMap<String, WordFingerprint> = self
+        let fingerprints = self
             .word_fingerprinter
             .iter()
             .map(|(w, wf)| (w.clone(), wf.clone()))
             .collect();
+        RetinaFormat::write_with_metadata_and_index(
+            path,
+            &fingerprints,
+            self.dimension,
+            crate::storage::format::RetinaMetadata {
+                fingerprint_config: self.config.clone(),
+                text_config: self.text_config.clone(),
+                training_report: self.training_report.clone(),
+                word_metadata: Default::default(),
+            },
+            self.inverted_index.as_ref(),
+        )
+    }
 
-        // Save with inverted index if we have one
-        if let Some(ref idx) = self.inverted_index {
-            RetinaFormat::write_with_index(path, &fingerprints, self.dimension, idx)
+    /// Saved training parameters and diagnostics. Absent for legacy files.
+    pub fn training_report(&self) -> Option<&TrainingReport> {
+        self.training_report.as_ref()
+    }
+
+    /// Attach the resolved training parameters and use their tokenizer at inference.
+    pub fn set_training_report(&mut self, report: TrainingReport) {
+        self.text_config = report.config.text.clone();
+        self.training_report = Some(report);
+    }
+
+    fn normalize_word(&self, word: &str) -> Option<String> {
+        let tokens = crate::Tokenizer::new(self.text_config.clone()).tokenize_to_strings(word);
+        if tokens.len() == 1 {
+            tokens.into_iter().next()
         } else {
-            RetinaFormat::write(path, &fingerprints, self.dimension)
+            None
         }
     }
 
@@ -147,23 +162,36 @@ impl Retina {
 
     /// Checks if a word exists in the vocabulary.
     pub fn contains(&self, word: &str) -> bool {
-        self.word_fingerprinter.contains(word)
+        self.normalize_word(word)
+            .is_some_and(|word| self.word_fingerprinter.contains(&word))
     }
 
     /// Gets a word's fingerprint.
     pub fn get_word_fingerprint(&self, word: &str) -> Option<&Sdr> {
-        self.word_fingerprinter.get(word).map(|wf| &wf.fingerprint)
+        self.word_fingerprinter
+            .get(&self.normalize_word(word)?)
+            .map(|wf| &wf.fingerprint)
     }
 
     /// Generates a fingerprint for text.
     pub fn fingerprint_text(&self, text: &str) -> Sdr {
-        let tf = TextFingerprinter::new(&self.word_fingerprinter, self.config.clone());
+        let tf = TextFingerprinter::with_tokenizer(
+            &self.word_fingerprinter,
+            self.config.clone(),
+            crate::Tokenizer::new(self.text_config.clone()),
+        );
         tf.fingerprint(text)
     }
 
     /// Computes similarity between two words.
     pub fn word_similarity(&self, word1: &str, word2: &str) -> Result<f64> {
-        self.word_fingerprinter.word_similarity(word1, word2)
+        let word1 = self
+            .normalize_word(word1)
+            .ok_or_else(|| ProteusError::WordNotFound(word1.into()))?;
+        let word2 = self
+            .normalize_word(word2)
+            .ok_or_else(|| ProteusError::WordNotFound(word2.into()))?;
+        self.word_fingerprinter.word_similarity(&word1, &word2)
     }
 
     /// Computes similarity between two texts.
@@ -174,37 +202,21 @@ impl Retina {
     }
 
     /// Finds words similar to a given word.
-    ///
-    /// Uses the inverted index for fast approximate search when available,
-    /// falling back to brute-force for small vocabularies or when no index exists.
     pub fn find_similar_words(&self, word: &str, k: usize) -> Result<Vec<(String, f64)>> {
+        let normalized = self
+            .normalize_word(word)
+            .ok_or_else(|| ProteusError::WordNotFound(word.into()))?;
         let target = self
-            .word_fingerprinter
-            .get(word)
-            .ok_or_else(|| ProteusError::WordNotFound(word.to_string()))?;
-
-        // Use inverted index for fast search (O(active_bits * avg_posting_list))
-        if let Some(ref index) = self.inverted_index {
-            let candidates = index.search_with_scores(&target.fingerprint, k * 10);
-
-            let mut results: Vec<(String, f64)> = candidates
-                .into_iter()
-                .filter(|(w, _)| w != word)
-                .filter_map(|(w, _)| {
-                    self.word_fingerprinter.get(&w).map(|wf| {
-                        let sim = target.fingerprint.cosine_similarity(&wf.fingerprint);
-                        (w, sim)
-                    })
-                })
-                .collect();
-
-            results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            .get_word_fingerprint(&normalized)
+            .ok_or_else(|| ProteusError::WordNotFound(word.into()))?;
+        if self.inverted_index.is_some() {
+            let mut results = self.find_similar_indexed(target, k.saturating_add(1))?;
+            results.retain(|(w, _)| w != &normalized);
             results.truncate(k);
-            return Ok(results);
+            Ok(results)
+        } else {
+            self.word_fingerprinter.find_similar(&normalized, k)
         }
-
-        // Fallback to brute force for small vocabularies or no index
-        self.word_fingerprinter.find_similar(word, k)
     }
 
     /// Finds words similar to a given fingerprint.
@@ -220,19 +232,30 @@ impl Retina {
             .ok_or_else(|| ProteusError::Fingerprint("Inverted index not built".to_string()))?;
 
         let similarity = CosineSimilarity;
-        let candidates = index.search(fp, k * 2);
+        // Every positive-cosine result must share a bit. Raw-overlap top-2k
+        // pruning is unsound when fingerprint cardinalities differ.
+        let candidates = index.search(fp, usize::MAX);
 
         let mut results: Vec<(String, f64)> = candidates
             .iter()
             .filter_map(|word| {
                 self.word_fingerprinter.get(word).map(|wf| {
-                    let sim = similarity.similarity(&fp, &wf.fingerprint);
+                    let sim = similarity.similarity(fp, &wf.fingerprint);
                     (word.clone(), sim)
                 })
             })
             .collect();
 
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        // Include zero-overlap candidates so this API exactly matches exhaustive
+        // ranking, including k larger than the number of positive matches.
+        if results.len() < k {
+            for (word, wf) in self.word_fingerprinter.iter() {
+                if wf.fingerprint.overlap_count(fp) == 0 {
+                    results.push((word.clone(), 0.0));
+                }
+            }
+        }
+        results.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         results.truncate(k);
 
         Ok(results)
@@ -246,14 +269,14 @@ impl Retina {
         let mut position_counts: HashMap<u32, usize> = HashMap::new();
 
         for word in words {
-            if let Some(wf) = self.word_fingerprinter.get(*word) {
-                for pos in wf.fingerprint.iter() {
+            if let Some(fp) = self.get_word_fingerprint(word) {
+                for pos in fp.iter() {
                     *position_counts.entry(pos).or_insert(0) += 1;
                 }
             }
         }
 
-        // Keep positions that appear in at least half the words
+        // Keep positions supported by a strict majority of the supplied words.
         let threshold = words.len() / 2;
         let positions: Vec<u32> = position_counts
             .into_iter()
@@ -268,51 +291,71 @@ impl Retina {
     ///
     /// Returns positions unique to the first concept.
     pub fn semantic_difference(&self, word1: &str, word2: &str) -> Option<Sdr> {
-        let fp1 = self.word_fingerprinter.get(word1)?;
-        let fp2 = self.word_fingerprinter.get(word2)?;
+        let fp1 = self.get_word_fingerprint(word1)?;
+        let fp2 = self.get_word_fingerprint(word2)?;
 
         // XOR to find differences, then AND with fp1 to get positions unique to fp1
-        let diff = &fp1.fingerprint ^ &fp2.fingerprint;
-        Some(&diff & &fp1.fingerprint)
+        let diff = fp1 ^ fp2;
+        Some(&diff & fp1)
     }
 
     /// Performs analogy: A is to B as C is to ?
     ///
     /// Returns words that are semantically related to C in the same way B is to A.
     pub fn analogy(&self, a: &str, b: &str, c: &str, k: usize) -> Result<Vec<(String, f64)>> {
+        let a = self
+            .normalize_word(a)
+            .ok_or_else(|| ProteusError::WordNotFound(a.into()))?;
+        let b = self
+            .normalize_word(b)
+            .ok_or_else(|| ProteusError::WordNotFound(b.into()))?;
+        let c = self
+            .normalize_word(c)
+            .ok_or_else(|| ProteusError::WordNotFound(c.into()))?;
         let fp_a = self
             .word_fingerprinter
-            .get(a)
+            .get(&a)
             .ok_or_else(|| ProteusError::WordNotFound(a.to_string()))?;
         let fp_b = self
             .word_fingerprinter
-            .get(b)
+            .get(&b)
             .ok_or_else(|| ProteusError::WordNotFound(b.to_string()))?;
         let fp_c = self
             .word_fingerprinter
-            .get(c)
+            .get(&c)
             .ok_or_else(|| ProteusError::WordNotFound(c.to_string()))?;
 
-        // Compute the relationship vector: B - A
-        let relationship = &fp_b.fingerprint ^ &fp_a.fingerprint;
-
-        // Apply relationship to C: C + relationship
-        let target = &fp_c.fingerprint | &relationship;
-
-        // Sparsify target
-        let mut target = target;
-        target.sparsify(self.config.max_active_bits);
-
-        // Find most similar words, excluding a, b, c
-        let results = self.find_similar_to_fingerprint(&target, k + 3);
-
-        let filtered: Vec<(String, f64)> = results
-            .into_iter()
-            .filter(|(w, _)| w != a && w != b && w != c)
-            .take(k)
+        // Signed binary-vector arithmetic: cosine(B + C - A, candidate).
+        // XOR loses the sign of a removed feature and is not subtraction.
+        let mut target = HashMap::<u32, f64>::new();
+        for p in fp_b.fingerprint.iter().chain(fp_c.fingerprint.iter()) {
+            *target.entry(p).or_default() += 1.0;
+        }
+        for p in fp_a.fingerprint.iter() {
+            *target.entry(p).or_default() -= 1.0;
+        }
+        let norm = target.values().map(|x| x * x).sum::<f64>().sqrt();
+        let mut results: Vec<_> = self
+            .word_fingerprinter
+            .iter()
+            .filter(|(w, _)| *w != &a && *w != &b && *w != &c)
+            .map(|(word, wf)| {
+                let denominator = norm * (wf.cardinality() as f64).sqrt();
+                let score = if denominator == 0.0 {
+                    0.0
+                } else {
+                    wf.fingerprint
+                        .iter()
+                        .map(|p| target.get(&p).copied().unwrap_or(0.0))
+                        .sum::<f64>()
+                        / denominator
+                };
+                (word.clone(), score)
+            })
             .collect();
-
-        Ok(filtered)
+        results.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        results.truncate(k);
+        Ok(results)
     }
 
     /// Builds the inverted index for fast similarity search.
@@ -323,17 +366,20 @@ impl Retina {
             .map(|(w, wf)| (w.clone(), wf.clone()))
             .collect();
 
-        self.inverted_index = Some(InvertedIndex::from_fingerprints(&fingerprints, self.grid_size()));
+        self.inverted_index = Some(InvertedIndex::from_fingerprints(
+            &fingerprints,
+            self.grid_size(),
+        ));
     }
-
     /// Returns words that have a specific grid position active in their fingerprint.
     ///
     /// Requires the inverted index to be built.
     pub fn words_at_position(&self, position: u32) -> Result<Vec<String>> {
-        let index = self
-            .inverted_index
-            .as_ref()
-            .ok_or_else(|| ProteusError::Fingerprint("Inverted index not built. Run 'proteus migrate' first.".to_string()))?;
+        let index = self.inverted_index.as_ref().ok_or_else(|| {
+            ProteusError::Fingerprint(
+                "Inverted index not built. Run 'proteus migrate' first.".to_string(),
+            )
+        })?;
 
         Ok(index.words_at_position(position))
     }
@@ -342,13 +388,15 @@ impl Retina {
     ///
     /// Returns (word, overlap_count) pairs sorted by overlap count (descending).
     pub fn words_at_positions(&self, positions: &[u32], k: usize) -> Result<Vec<(String, u32)>> {
-        let index = self
-            .inverted_index
-            .as_ref()
-            .ok_or_else(|| ProteusError::Fingerprint("Inverted index not built. Run 'proteus migrate' first.".to_string()))?;
+        let index = self.inverted_index.as_ref().ok_or_else(|| {
+            ProteusError::Fingerprint(
+                "Inverted index not built. Run 'proteus migrate' first.".to_string(),
+            )
+        })?;
 
         // Count how many of the query positions each word has
-        let mut word_scores: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut word_scores: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
 
         for &pos in positions {
             for word in index.words_at_position(pos) {
@@ -358,7 +406,7 @@ impl Retina {
 
         // Sort by score descending
         let mut results: Vec<(String, u32)> = word_scores.into_iter().collect();
-        results.sort_by(|a, b| b.1.cmp(&a.1));
+        results.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         results.truncate(k);
 
         Ok(results)

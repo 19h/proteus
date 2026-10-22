@@ -17,7 +17,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     /// let rb = RoaringTreemap::new();
     /// ```
     pub fn new() -> RoaringTreemap {
@@ -29,7 +29,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     /// let rb = RoaringTreemap::full();
     /// ```
     pub fn full() -> RoaringTreemap {
@@ -41,7 +41,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// assert_eq!(rb.insert(3), true);
@@ -60,7 +60,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// rb.insert_range(2..4);
@@ -114,7 +114,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// assert!(rb.push(1));
@@ -137,7 +137,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::{RoaringTreemap, IntegerTooSmall};
+    /// use proteus::roaring::{RoaringTreemap, IntegerTooSmall};
     ///
     /// let mut rb = RoaringTreemap::new();
     /// assert!(rb.try_push(1).is_ok());
@@ -180,7 +180,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// rb.insert(3);
@@ -211,7 +211,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// rb.insert(2);
@@ -256,7 +256,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// rb.insert(1);
@@ -277,7 +277,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// rb.insert(1);
@@ -294,7 +294,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// assert_eq!(rb.is_empty(), true);
@@ -311,7 +311,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::full();
     /// assert!(!rb.is_empty());
@@ -326,7 +326,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// assert_eq!(rb.len(), 0);
@@ -347,7 +347,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// assert_eq!(rb.min(), None);
@@ -368,7 +368,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// assert_eq!(rb.max(), None);
@@ -390,7 +390,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// assert_eq!(rb.rank(0), 0);
@@ -417,7 +417,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// assert_eq!(rb.select(0), None);

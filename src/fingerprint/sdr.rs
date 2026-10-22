@@ -27,12 +27,20 @@ impl Sdr {
 
     /// Creates an SDR from a list of active positions.
     pub fn from_positions(positions: &[u32], size: u32) -> Self {
+        assert!(
+            positions.iter().all(|&p| p < size),
+            "SDR position outside its universe"
+        );
         let bits: RoaringBitmap = positions.iter().copied().collect();
         Self { bits, size }
     }
 
     /// Creates an SDR from a RoaringBitmap.
     pub fn from_bitmap(bits: RoaringBitmap, size: u32) -> Self {
+        assert!(
+            bits.max().is_none_or(|p| p < size),
+            "SDR position outside its universe"
+        );
         Self { bits, size }
     }
 
@@ -51,7 +59,11 @@ impl Sdr {
     /// Returns the sparsity (fraction of active bits).
     #[inline]
     pub fn sparsity(&self) -> f64 {
-        self.bits.len() as f64 / self.size as f64
+        if self.size == 0 {
+            0.0
+        } else {
+            self.bits.len() as f64 / self.size as f64
+        }
     }
 
     /// Checks if a bit is active at the given position.

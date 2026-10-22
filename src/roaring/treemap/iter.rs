@@ -131,7 +131,7 @@ impl Iter<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     /// use core::iter::FromIterator;
     ///
     /// let bitmap = (1..3).collect::<RoaringTreemap>();
@@ -169,7 +169,7 @@ impl Iter<'_> {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     /// use core::iter::FromIterator;
     ///
     /// let bitmap = (1..3).collect::<RoaringTreemap>();
@@ -336,7 +336,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     /// use core::iter::FromIterator;
     ///
     /// let bitmap = (1..3).collect::<RoaringTreemap>();
@@ -356,7 +356,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::{RoaringBitmap, RoaringTreemap};
+    /// use proteus::roaring::{RoaringBitmap, RoaringTreemap};
     /// use core::iter::FromIterator;
     ///
     /// let original = (0..6000).collect::<RoaringTreemap>();
@@ -376,7 +376,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     /// use core::iter::FromIterator;
     ///
     /// let original = (0..6000).collect::<RoaringTreemap>();
@@ -458,7 +458,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::from_sorted_iter(0..10).unwrap();
     ///
@@ -483,7 +483,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb = RoaringTreemap::new();
     /// rb.append(0..10);

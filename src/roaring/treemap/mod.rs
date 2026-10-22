@@ -22,7 +22,7 @@ pub use self::iter::{BitmapIter, IntoIter, Iter};
 /// # Examples
 ///
 /// ```rust
-/// use roaring::RoaringTreemap;
+/// use proteus::roaring::RoaringTreemap;
 ///
 /// let mut rb = RoaringTreemap::new();
 ///

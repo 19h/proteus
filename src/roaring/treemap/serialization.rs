@@ -10,7 +10,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let rb1: RoaringTreemap = (1..4).collect();
     /// let mut bytes = Vec::with_capacity(rb1.serialized_size());
@@ -31,7 +31,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let rb1: RoaringTreemap = (1..4).collect();
     /// let mut bytes = vec![];
@@ -59,7 +59,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let rb1: RoaringTreemap = (1..4).collect();
     /// let mut bytes = vec![];
@@ -82,7 +82,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let rb1: RoaringTreemap = (1..4).collect();
     /// let mut bytes = vec![];

@@ -29,7 +29,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let rb1: RoaringBitmap = (1..4).collect();
     /// let mut bytes = Vec::with_capacity(rb1.serialized_size());
@@ -66,7 +66,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let rb1: RoaringBitmap = (1..4).collect();
     /// let mut bytes = vec![];
@@ -162,7 +162,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let rb1: RoaringBitmap = (1..4).collect();
     /// let mut bytes = vec![];
@@ -185,7 +185,7 @@ impl RoaringBitmap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let rb1: RoaringBitmap = (1..4).collect();
     /// let mut bytes = vec![];

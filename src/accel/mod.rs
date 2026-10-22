@@ -26,6 +26,10 @@
 //! ```rust,no_run
 //! use proteus::accel::GpuAccelerator;
 //!
+//! # #[cfg(feature = "gpu")]
+//! # {
+//! # let inputs = vec![0.0f32; 10000 * 100];
+//! # let weights = vec![0.0f32; 16384 * 100];
 //! if GpuAccelerator::is_available() {
 //!     let gpu = GpuAccelerator::new().expect("GPU init failed");
 //!
@@ -41,6 +45,7 @@
 //!     // Find BMU for each input
 //!     let bmus = GpuAccelerator::find_bmu_indices(&distances, 10000, 16384);
 //! }
+//! # }
 //! ```
 
 #[cfg(feature = "gpu")]

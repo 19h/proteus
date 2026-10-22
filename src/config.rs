@@ -30,7 +30,7 @@ impl Default for Config {
 }
 
 /// Self-Organizing Map configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SomConfig {
     /// Grid dimension (grid is dim x dim).
     /// Default: 128 (for 16,384 total positions).
@@ -105,21 +105,21 @@ impl SomConfig {
 }
 
 /// Text processing configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextConfig {
     /// Convert all text to lowercase.
     /// Default: true.
     pub lowercase: bool,
 
-    /// Minimum token length to include.
+    /// Minimum normalized UTF-8 token length in bytes to include.
     /// Default: 2.
     pub min_token_length: usize,
 
-    /// Maximum token length to include.
+    /// Maximum normalized UTF-8 token length in bytes to include.
     /// Default: 50.
     pub max_token_length: usize,
 
-    /// Remove punctuation from tokens.
+    /// Remove ASCII punctuation from tokens (legacy normalization policy).
     /// Default: true.
     pub remove_punctuation: bool,
 
@@ -146,7 +146,7 @@ impl Default for TextConfig {
 }
 
 /// Fingerprint configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FingerprintConfig {
     /// Target sparsity (fraction of active bits).
     /// Default: 0.02 (2%).
@@ -156,8 +156,8 @@ pub struct FingerprintConfig {
     /// Default: 328 (2% of 16,384).
     pub max_active_bits: usize,
 
-    /// Minimum number of active bits in a fingerprint.
-    /// Default: 10.
+    /// Legacy advisory minimum; evidence is never padded to meet it.
+    /// Default: 10. Actual cardinality may be lower.
     pub min_active_bits: usize,
 
     /// Use weighted aggregation for text fingerprints.
@@ -173,6 +173,31 @@ impl Default for FingerprintConfig {
             min_active_bits: 10,
             weighted_aggregation: true,
         }
+    }
+}
+
+impl FingerprintConfig {
+    /// Validate density and cardinality bounds. Minimum density never causes
+    /// synthetic bits to be invented for a word with insufficient evidence.
+    pub fn validate(&self) -> crate::Result<()> {
+        if !self.sparsity.is_finite()
+            || self.sparsity <= 0.0
+            || self.sparsity > 1.0
+            || self.max_active_bits == 0
+            || self.min_active_bits > self.max_active_bits
+        {
+            return Err(crate::ProteusError::Config(
+                "Invalid fingerprint sparsity/cardinality bounds".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Upper bound from both density and absolute cardinality, clamped to the grid.
+    pub fn active_bit_limit(&self, grid_size: u32) -> usize {
+        ((self.sparsity * grid_size as f64).ceil() as usize)
+            .min(self.max_active_bits)
+            .min(grid_size as usize)
     }
 }
 

@@ -41,7 +41,7 @@ impl RoaringBitmap {
     /// Returns statistics about the composition of a roaring bitmap.
     ///
     /// ```
-    /// use roaring::RoaringBitmap;
+    /// use proteus::roaring::RoaringBitmap;
     ///
     /// let mut bitmap: RoaringBitmap = (1..100).collect();
     /// let statistics = bitmap.statistics();

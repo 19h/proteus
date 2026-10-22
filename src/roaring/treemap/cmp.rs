@@ -20,7 +20,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb1 = RoaringTreemap::new();
     /// let mut rb2 = RoaringTreemap::new();
@@ -45,7 +45,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb1 = RoaringTreemap::new();
     /// let mut rb2 = RoaringTreemap::new();
@@ -84,7 +84,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let mut rb1 = RoaringTreemap::new();
     /// let mut rb2 = RoaringTreemap::new();

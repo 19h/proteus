@@ -17,7 +17,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let rb1: RoaringTreemap = (1..4).collect();
     /// let rb2: RoaringTreemap = (3..5).collect();
@@ -38,7 +38,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let rb1: RoaringTreemap = (1..4).collect();
     /// let rb2: RoaringTreemap = (3..5).collect();
@@ -66,7 +66,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let rb1: RoaringTreemap = (1..4).collect();
     /// let rb2: RoaringTreemap = (3..5).collect();
@@ -87,7 +87,7 @@ impl RoaringTreemap {
     /// # Examples
     ///
     /// ```rust
-    /// use roaring::RoaringTreemap;
+    /// use proteus::roaring::RoaringTreemap;
     ///
     /// let rb1: RoaringTreemap = (1..4).collect();
     /// let rb2: RoaringTreemap = (3..5).collect();

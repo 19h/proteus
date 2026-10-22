@@ -74,7 +74,7 @@ impl std::error::Error for NonSortedIntegers {}
 ///
 /// # Examples
 /// ```
-/// use roaring::{MultiOps, RoaringBitmap};
+/// use proteus::roaring::{MultiOps, RoaringBitmap};
 ///
 /// let bitmaps = [
 ///     RoaringBitmap::from_iter(0..10),

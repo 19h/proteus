@@ -53,7 +53,7 @@ impl<'a> TextFingerprinter<'a> {
         }
 
         // Sparsify to target density
-        let max_bits = self.config.max_active_bits;
+        let max_bits = self.config.active_bit_limit(grid_size);
         result.sparsify(max_bits);
 
         result
@@ -80,9 +80,9 @@ impl<'a> TextFingerprinter<'a> {
 
         // Sort by count and take top positions
         let mut sorted: Vec<(u32, usize)> = position_counts.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
-        let target_bits = self.config.max_active_bits;
+        let target_bits = self.config.active_bit_limit(grid_size);
         let positions: Vec<u32> = sorted
             .into_iter()
             .take(target_bits)
@@ -121,9 +121,9 @@ impl<'a> TextFingerprinter<'a> {
 
         // Sort by score and take top positions
         let mut sorted: Vec<(u32, f64)> = position_scores.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        sorted.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
 
-        let target_bits = self.config.max_active_bits;
+        let target_bits = self.config.active_bit_limit(grid_size);
         let positions: Vec<u32> = sorted
             .into_iter()
             .take(target_bits)
@@ -166,9 +166,9 @@ impl<'a> TextFingerprinter<'a> {
 
         // Sort by score and take top positions
         let mut sorted: Vec<(u32, f64)> = position_scores.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        sorted.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
 
-        let target_bits = self.config.max_active_bits;
+        let target_bits = self.config.active_bit_limit(grid_size);
         let positions: Vec<u32> = sorted
             .into_iter()
             .take(target_bits)
@@ -229,7 +229,10 @@ mod tests {
     #[test]
     fn test_fingerprint_union() {
         let wf = create_test_fingerprinter();
-        let config = FingerprintConfig::default();
+        let config = FingerprintConfig {
+            sparsity: 1.0,
+            ..FingerprintConfig::default()
+        };
         let tf = TextFingerprinter::new(&wf, config);
 
         let fp = tf.fingerprint_union("hello world");

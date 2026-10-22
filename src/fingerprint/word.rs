@@ -34,12 +34,7 @@ impl WordFingerprint {
     }
 
     /// Creates a word fingerprint with frequency information.
-    pub fn with_frequency(
-        word: String,
-        positions: &[u32],
-        grid_size: u32,
-        frequency: f64,
-    ) -> Self {
+    pub fn with_frequency(word: String, positions: &[u32], grid_size: u32, frequency: f64) -> Self {
         Self {
             word,
             fingerprint: Sdr::from_positions(positions, grid_size),
@@ -98,7 +93,7 @@ impl WordFingerprinter {
         let total_hits: usize = word_to_bmus.values().map(|bmus| bmus.len()).sum();
         let total_hits_f64 = total_hits as f64;
 
-        let target_bits = self.config.max_active_bits;
+        let target_bits = self.config.active_bit_limit(self.grid_size);
         let grid_size = self.grid_size;
 
         // Update progress message
@@ -119,7 +114,7 @@ impl WordFingerprinter {
 
                 // Sort by count and take top positions
                 let mut sorted: Vec<(usize, usize)> = position_counts.into_iter().collect();
-                sorted.sort_by(|a, b| b.1.cmp(&a.1));
+                sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
                 let positions: Vec<u32> = sorted
                     .into_iter()
@@ -128,7 +123,11 @@ impl WordFingerprinter {
                     .collect();
 
                 // Compute word frequency (normalized by total hits)
-                let word_frequency = bmus.len() as f64 / total_hits_f64;
+                let word_frequency = if total_hits == 0 {
+                    0.0
+                } else {
+                    bmus.len() as f64 / total_hits_f64
+                };
 
                 let fingerprint = WordFingerprint::with_frequency(
                     word.clone(),
@@ -165,11 +164,17 @@ impl WordFingerprinter {
         word_frequencies: Option<&HashMap<String, f64>>,
     ) {
         for (word, weighted_positions) in word_to_positions {
-            // Sort by weight and take top positions
-            let mut sorted = weighted_positions.clone();
-            sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            // Combine repeated contributions before selecting distinct cells.
+            let mut counts = std::collections::BTreeMap::<usize, f64>::new();
+            for &(pos, weight) in weighted_positions {
+                if pos < self.grid_size as usize && weight.is_finite() && weight > 0.0 {
+                    *counts.entry(pos).or_default() += weight;
+                }
+            }
+            let mut sorted: Vec<_> = counts.into_iter().collect();
+            sorted.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
 
-            let target_bits = self.config.max_active_bits;
+            let target_bits = self.config.active_bit_limit(self.grid_size);
             let positions: Vec<u32> = sorted
                 .into_iter()
                 .take(target_bits)
@@ -232,7 +237,8 @@ impl WordFingerprinter {
 
     /// Adds or updates a fingerprint.
     pub fn insert(&mut self, fingerprint: WordFingerprint) {
-        self.fingerprints.insert(fingerprint.word.clone(), fingerprint);
+        self.fingerprints
+            .insert(fingerprint.word.clone(), fingerprint);
     }
 
     /// Removes a word's fingerprint.
@@ -254,113 +260,27 @@ impl WordFingerprinter {
         Ok(fp1.fingerprint.cosine_similarity(&fp2.fingerprint))
     }
 
-    /// Finds the most similar words to a given word.
-    /// Filters out likely stopwords using heuristics.
+    /// Exact cosine ranking, excluding the query, with lexical tie-breaking.
+    /// No length, frequency or sampled stopword heuristics are applied.
     pub fn find_similar(&self, word: &str, k: usize) -> Result<Vec<(String, f64)>> {
         let target = self
             .fingerprints
             .get(word)
-            .ok_or_else(|| ProteusError::WordNotFound(word.to_string()))?;
-
-        // Compute stopword scores for all words
-        let stopword_scores = self.compute_stopword_scores();
-
-        let mut similarities: Vec<(String, f64)> = self
+            .ok_or_else(|| ProteusError::WordNotFound(word.to_owned()))?;
+        let mut results: Vec<_> = self
             .fingerprints
             .iter()
             .filter(|(w, _)| w.as_str() != word)
-            .filter(|(w, _)| {
-                // Filter out likely stopwords (score > 0.35)
-                stopword_scores.get(*w).copied().unwrap_or(0.0) < 0.35
-            })
             .map(|(w, wf)| {
-                let sim = target.fingerprint.cosine_similarity(&wf.fingerprint);
-                (w.clone(), sim)
+                (
+                    w.clone(),
+                    target.fingerprint.cosine_similarity(&wf.fingerprint),
+                )
             })
             .collect();
-
-        similarities.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        similarities.truncate(k);
-
-        Ok(similarities)
-    }
-
-    /// Computes a stopword score for each word (0.0 = content word, 1.0 = likely stopword).
-    ///
-    /// Uses multiple heuristics:
-    /// - Short length (1-3 chars)
-    /// - High overlap with other words (generic fingerprint)
-    /// - High frequency (if tracked)
-    fn compute_stopword_scores(&self) -> HashMap<String, f64> {
-        let mut scores: HashMap<String, f64> = HashMap::new();
-
-        // First, compute average overlap for each word's fingerprint
-        // Stopwords tend to have fingerprints that overlap with many other words
-        let all_fingerprints: Vec<(&String, &WordFingerprint)> = self.fingerprints.iter().collect();
-
-        for (word, wf) in &all_fingerprints {
-            let mut score = 0.0;
-
-            // Heuristic 1: Short words are more likely to be stopwords
-            let len = word.len();
-            if len == 1 {
-                score += 0.5;
-            } else if len == 2 {
-                score += 0.4;
-            } else if len == 3 {
-                score += 0.25;
-            } else if len == 4 {
-                score += 0.1;
-            }
-
-            // Heuristic 2: Words with apostrophes are often stopwords (contractions)
-            if word.contains('\'') || word.contains('\u{2019}') {
-                score += 0.2;
-            }
-
-            // Heuristic 3: High frequency words (if frequency is tracked)
-            // Thresholds tuned for large corpora where even common words may be < 0.01
-            if wf.frequency > 0.005 {
-                score += 0.4;  // Very high frequency - almost certainly a stopword
-            } else if wf.frequency > 0.002 {
-                score += 0.3;
-            } else if wf.frequency > 0.001 {
-                score += 0.2;
-            } else if wf.frequency > 0.0005 {
-                score += 0.1;
-            }
-
-            // Heuristic 4: Words that overlap highly with many other words
-            // Sample a subset for efficiency
-            let sample_size = 100usize.min(all_fingerprints.len());
-            let mut overlap_count = 0usize;
-            let mut sampled = 0usize;
-            for (other_word, other_wf) in all_fingerprints.iter().take(sample_size) {
-                if *other_word != *word {
-                    let overlap = wf.fingerprint.overlap_count(&other_wf.fingerprint);
-                    let max_overlap = wf.cardinality().min(other_wf.cardinality()) as f64;
-                    if max_overlap > 0.0 && (overlap as f64 / max_overlap) > 0.3 {
-                        overlap_count += 1;
-                    }
-                    sampled += 1;
-                }
-            }
-            if sampled > 0 {
-                let overlap_ratio = overlap_count as f64 / sampled as f64;
-                if overlap_ratio > 0.5 {
-                    score += 0.3;
-                } else if overlap_ratio > 0.3 {
-                    score += 0.2;
-                } else if overlap_ratio > 0.15 {
-                    score += 0.1;
-                }
-            }
-
-            let final_score: f64 = score;
-            scores.insert((*word).clone(), final_score.min(1.0));
-        }
-
-        scores
+        results.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        results.truncate(k);
+        Ok(results)
     }
 
     /// Finds words similar to a given fingerprint.
@@ -374,7 +294,7 @@ impl WordFingerprinter {
             })
             .collect();
 
-        similarities.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        similarities.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         similarities.truncate(k);
 
         similarities
@@ -430,7 +350,11 @@ mod tests {
 
         fingerprinter.insert(WordFingerprint::new("a".to_string(), &[1, 2, 3, 4], 100));
         fingerprinter.insert(WordFingerprint::new("b".to_string(), &[3, 4, 5, 6], 100));
-        fingerprinter.insert(WordFingerprint::new("c".to_string(), &[10, 20, 30, 40], 100));
+        fingerprinter.insert(WordFingerprint::new(
+            "c".to_string(),
+            &[10, 20, 30, 40],
+            100,
+        ));
 
         let sim_ab = fingerprinter.word_similarity("a", "b").unwrap();
         let sim_ac = fingerprinter.word_similarity("a", "c").unwrap();
@@ -446,7 +370,11 @@ mod tests {
 
         fingerprinter.insert(WordFingerprint::new("a".to_string(), &[1, 2, 3, 4], 100));
         fingerprinter.insert(WordFingerprint::new("b".to_string(), &[1, 2, 5, 6], 100));
-        fingerprinter.insert(WordFingerprint::new("c".to_string(), &[10, 20, 30, 40], 100));
+        fingerprinter.insert(WordFingerprint::new(
+            "c".to_string(),
+            &[10, 20, 30, 40],
+            100,
+        ));
 
         let similar = fingerprinter.find_similar("a", 2).unwrap();
         assert_eq!(similar.len(), 2);

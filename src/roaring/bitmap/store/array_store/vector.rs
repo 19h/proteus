@@ -10,9 +10,7 @@
 
 use super::scalar;
 use core::simd::cmp::{SimdPartialEq, SimdPartialOrd};
-use core::simd::{
-    mask16x8, u16x8, u8x16, LaneCount, Mask, Simd, SimdElement, SupportedLaneCount, ToBytes,
-};
+use core::simd::{mask16x8, u16x8, u8x16, Mask, Simd, SimdElement, ToBytes, Select};
 
 // a one-pass SSE union algorithm
 pub fn or(lhs: &[u16], rhs: &[u16], visitor: &mut impl BinaryOperationVisitor) {
@@ -358,10 +356,7 @@ pub fn sub(lhs: &[u16], rhs: &[u16], visitor: &mut impl BinaryOperationVisitor) 
 fn lanes_min_u16<const LANES: usize>(
     lhs: Simd<u16, LANES>,
     rhs: Simd<u16, LANES>,
-) -> Simd<u16, LANES>
-where
-    LaneCount<LANES>: SupportedLaneCount,
-{
+) -> Simd<u16, LANES> {
     lhs.simd_le(rhs).select(lhs, rhs)
 }
 
@@ -370,10 +365,7 @@ where
 fn lanes_max_u16<const LANES: usize>(
     lhs: Simd<u16, LANES>,
     rhs: Simd<u16, LANES>,
-) -> Simd<u16, LANES>
-where
-    LaneCount<LANES>: SupportedLaneCount,
-{
+) -> Simd<u16, LANES> {
     lhs.simd_gt(rhs).select(lhs, rhs)
 }
 
@@ -381,7 +373,6 @@ where
 pub fn load<U, const LANES: usize>(src: &[U]) -> Simd<U, LANES>
 where
     U: SimdElement + PartialOrd,
-    LaneCount<LANES>: SupportedLaneCount,
 {
     debug_assert!(src.len() >= LANES);
     unsafe { load_unchecked(src) }
@@ -395,7 +386,6 @@ where
 pub unsafe fn load_unchecked<U, const LANES: usize>(src: &[U]) -> Simd<U, LANES>
 where
     U: SimdElement + PartialOrd,
-    LaneCount<LANES>: SupportedLaneCount,
 {
     unsafe { core::ptr::read_unaligned(src as *const _ as *const Simd<U, LANES>) }
 }
@@ -405,7 +395,6 @@ where
 pub fn store<U, const LANES: usize>(v: Simd<U, LANES>, out: &mut [U])
 where
     U: SimdElement + PartialOrd,
-    LaneCount<LANES>: SupportedLaneCount,
 {
     debug_assert!(out.len() >= LANES);
     unsafe {
@@ -421,7 +410,6 @@ where
 unsafe fn store_unchecked<U, const LANES: usize>(v: Simd<U, LANES>, out: &mut [U])
 where
     U: SimdElement + PartialOrd,
-    LaneCount<LANES>: SupportedLaneCount,
 {
     unsafe { core::ptr::write_unaligned(out as *mut _ as *mut Simd<U, LANES>, v) }
 }

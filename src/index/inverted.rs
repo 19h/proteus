@@ -23,11 +23,36 @@ pub struct InvertedIndex {
 }
 
 impl InvertedIndex {
+    /// Reconstruct canonical word IDs and posting lists from a persisted index.
+    pub(crate) fn from_postings(words: Vec<String>, posting_lists: Vec<RoaringBitmap>) -> Self {
+        let word_to_index = words
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (w.clone(), i as u32))
+            .collect();
+        Self {
+            grid_size: posting_lists.len() as u32,
+            posting_lists,
+            index_to_word: words,
+            word_to_index,
+        }
+    }
+
+    /// Check every persisted ID and bit against the canonical fingerprint index.
+    pub(crate) fn matches_fingerprints(
+        &self,
+        fingerprints: &HashMap<String, WordFingerprint>,
+        grid_size: u32,
+    ) -> bool {
+        let expected = Self::from_fingerprints(fingerprints, grid_size);
+        self.grid_size == expected.grid_size
+            && self.posting_lists == expected.posting_lists
+            && self.index_to_word == expected.index_to_word
+            && self.word_to_index == expected.word_to_index
+    }
     /// Creates an empty inverted index.
     pub fn new(grid_size: u32) -> Self {
-        let posting_lists = (0..grid_size)
-            .map(|_| RoaringBitmap::new())
-            .collect();
+        let posting_lists = (0..grid_size).map(|_| RoaringBitmap::new()).collect();
 
         Self {
             posting_lists,
@@ -70,7 +95,10 @@ impl InvertedIndex {
                 let wf = &fingerprints[*word];
                 for pos in wf.fingerprint.iter() {
                     if (pos as usize) < posting_lists.len() {
-                        posting_lists[pos as usize].lock().unwrap().insert(word_idx as u32);
+                        posting_lists[pos as usize]
+                            .lock()
+                            .unwrap()
+                            .insert(word_idx as u32);
                     }
                 }
             });
@@ -148,7 +176,11 @@ impl InvertedIndex {
 
         // Sort by score and take top k
         let mut sorted: Vec<(u32, u32)> = word_scores.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by(|a, b| {
+            b.1.cmp(&a.1).then_with(|| {
+                self.index_to_word[a.0 as usize].cmp(&self.index_to_word[b.0 as usize])
+            })
+        });
         sorted.truncate(k);
 
         sorted
@@ -191,8 +223,17 @@ impl InvertedIndex {
     /// Returns statistics about the index.
     pub fn stats(&self) -> IndexStats {
         let total_entries: u64 = self.posting_lists.iter().map(|pl| pl.len()).sum();
-        let non_empty_lists = self.posting_lists.iter().filter(|pl| !pl.is_empty()).count();
-        let max_list_size = self.posting_lists.iter().map(|pl| pl.len()).max().unwrap_or(0);
+        let non_empty_lists = self
+            .posting_lists
+            .iter()
+            .filter(|pl| !pl.is_empty())
+            .count();
+        let max_list_size = self
+            .posting_lists
+            .iter()
+            .map(|pl| pl.len())
+            .max()
+            .unwrap_or(0);
         let avg_list_size = if non_empty_lists > 0 {
             total_entries as f64 / non_empty_lists as f64
         } else {
@@ -211,7 +252,10 @@ impl InvertedIndex {
 
     /// Returns posting list sizes for analysis.
     pub fn posting_list_sizes(&self) -> Vec<usize> {
-        self.posting_lists.iter().map(|pl| pl.len() as usize).collect()
+        self.posting_lists
+            .iter()
+            .map(|pl| pl.len() as usize)
+            .collect()
     }
 
     /// Returns a reference to the posting list bitmap at a position.

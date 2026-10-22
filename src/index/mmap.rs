@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! +------------------------+
-//! | Header (16 bytes)      |
+//! | Header (20 bytes)      |
 //! +------------------------+
 //! | Offset Table           |
 //! | (grid_size * 8 bytes)  |
@@ -29,7 +29,7 @@ use std::path::Path;
 
 const MMAP_INDEX_MAGIC: &[u8; 4] = b"PIDX";
 const MMAP_INDEX_VERSION: u32 = 1;
-const HEADER_SIZE: usize = 16;
+const HEADER_SIZE: usize = 20;
 
 /// Memory-mapped inverted index for instant loading.
 ///
@@ -72,6 +72,12 @@ impl MmappedInvertedIndex {
         let data_offset = u64::from_le_bytes([
             mmap[12], mmap[13], mmap[14], mmap[15], mmap[16], mmap[17], mmap[18], mmap[19],
         ]);
+        let table_end = HEADER_SIZE as u64 + u64::from(grid_size) * 8;
+        if data_offset < table_end || data_offset > mmap.len() as u64 {
+            return Err(ProteusError::InvalidRetinaFormat(
+                "Invalid index data offset".into(),
+            ));
+        }
 
         Ok(Self {
             mmap,

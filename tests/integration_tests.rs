@@ -175,6 +175,7 @@ fn test_text_fingerprinting() {
 
     let fp_config = FingerprintConfig {
         max_active_bits: 20,
+        sparsity: 1.0,
         ..Default::default()
     };
     let retina = Retina::with_index(fps, 16, fp_config);
