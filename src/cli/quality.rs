@@ -84,7 +84,7 @@ pub(crate) fn evaluate_retina_relation(
     Ok(())
 }
 
-fn file_sha256(path: &std::path::Path) -> Result<String> {
+pub(crate) fn file_sha256(path: &std::path::Path) -> Result<String> {
     use sha2::{Digest, Sha256};
 
     let mut file = File::open(path)?;

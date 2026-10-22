@@ -9,6 +9,7 @@ cargo +nightly test
 cargo +nightly test --test training_contract
 cargo +nightly test --test rebase_compat
 cargo +nightly test --test semantic_contract
+cargo +nightly test --test contextual_contract
 python3 -m unittest discover -s tests -p test_prepare_semantic.py
 cargo +nightly test --test cli
 cargo +nightly test --test integration_tests
@@ -24,6 +25,8 @@ the recorded validation does not claim a warning-free tree.
 | --- | --- |
 | [`training_contract.rs`](../tests/training_contract.rs) | Scalar numerical oracle, schedules, topology, final assignment, reproducibility, corpus boundaries and malformed inputs |
 | [`rebase_compat.rs`](../tests/rebase_compat.rs) | Legacy file variants, metadata preservation and mapped search compatibility |
+| [`contextual_contract.rs`](../tests/contextual_contract.rs) | Independent information-content mass oracle, target/POS conditioning, bilateral symmetry, complete denominators, mapped persistence and CLI |
+| [`test_evaluate_contexts.py`](../tests/test_evaluate_contexts.py) | UTF-8 target conversion, label shape, lemma-cluster resampling, input alias protection and failed report publication |
 | [`semantic_contract.rs`](../tests/semantic_contract.rs) | Independent taxonomy/sense fixtures, voice/role/polarity/scope, phrases, coverage, compressed v5 corruption, atomic CLI failure and loaded/mapped migration |
 | [`test_prepare_semantic.py`](../tests/test_prepare_semantic.py) | Standard-library tests for original UTF-8 offsets, deterministic resource hashing and atomic preparation |
 | [`quality_contract.rs`](../tests/quality_contract.rs) | Feature modes, spectral projection, parameter validation and reader reproducibility |
@@ -58,6 +61,10 @@ Labelled evaluation is provided by `proteus evaluate`; paired comparisons use
 [quality guide](quality.md#evaluate-a-model) specifies schemas, split assignment,
 coverage handling and resampling limits. Keep failed comparisons in the
 validation record; do not choose defaults from a repeatedly inspected test set.
+
+`python3 -m unittest discover -s tests -p test_evaluate_contexts.py` checks the
+contextual evaluator without optional NLP dependencies. Its [WiC workflow](semantic.md#complete-contextual-evaluation)
+requires explicitly supplied data/labels and audits lexical-source overlap.
 
 [Grounded model preparation](semantic.md#prepare-train-and-inspect) has an explicit
 Python/model installation step. Unit tests use synthetic dependency oracles;

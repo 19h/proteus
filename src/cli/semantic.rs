@@ -1,8 +1,8 @@
 //! Native commands for knowledge-grounded training and relation-aware queries.
 
 use proteus::semantic::{
-    read_annotated_corpus, train_semantic, Lexicon, Relation, SemanticConfig, SemanticModel,
-    WordQuery,
+    evaluate_context_pairs, read_annotated_corpus, read_context_pairs, train_semantic, ByteSpan,
+    ContextualWord, Lexicon, PartOfSpeech, Relation, SemanticConfig, SemanticModel, WordQuery,
 };
 use proteus::{FingerprintConfig, ProteusError, Result, Retina};
 use std::fs::File;
@@ -13,6 +13,33 @@ use std::path::PathBuf;
 pub(crate) enum SemanticCommand {
     /// Train a v5 retina from complete parser annotations and an explicit lexicon
     Train(TrainSemanticArgs),
+    /// Infer target-aware senses with optional byte-range exclusion and known POS
+    Disambiguate {
+        #[arg(short, long)]
+        retina: PathBuf,
+        word: String,
+        #[command(flatten)]
+        context: ContextArgs,
+    },
+    /// Rank retained words from one target-aware context posterior
+    ContextualSimilar {
+        #[arg(short, long)]
+        retina: PathBuf,
+        word: String,
+        #[command(flatten)]
+        context: ContextArgs,
+        #[arg(long, default_value = "similarity")]
+        relation: Relation,
+        #[arg(short = 'k', long, default_value_t = 10)]
+        count: usize,
+    },
+    /// Compare both usages and evaluate optional labels in complete JSONL pairs
+    CompareContexts {
+        #[arg(short, long)]
+        retina: PathBuf,
+        #[arg(long)]
+        pairs: PathBuf,
+    },
     /// Inspect sense priors, contextual posteriors and retained source references
     Senses {
         #[arg(short, long)]
@@ -87,6 +114,35 @@ pub(crate) enum SemanticCommand {
 }
 
 #[derive(clap::Args)]
+pub(crate) struct ContextArgs {
+    #[arg(long)]
+    context: String,
+    #[arg(long)]
+    pos: Option<PartOfSpeech>,
+    #[arg(long, requires = "target_end")]
+    target_start: Option<usize>,
+    #[arg(long, requires = "target_start")]
+    target_end: Option<usize>,
+    #[arg(long, requires = "target_start")]
+    target_lemma: Option<String>,
+}
+
+impl ContextArgs {
+    fn query(self, word: String) -> ContextualWord {
+        ContextualWord {
+            word,
+            context: self.context,
+            part_of_speech: self.pos,
+            target: self
+                .target_start
+                .zip(self.target_end)
+                .map(|(start, end)| ByteSpan { start, end }),
+            target_lemma: self.target_lemma,
+        }
+    }
+}
+
+#[derive(clap::Args)]
 pub(crate) struct TrainSemanticArgs {
     /// Complete annotated JSONL corpus; '-' reads standard input
     #[arg(short, long)]
@@ -125,6 +181,30 @@ pub(crate) struct TrainSemanticArgs {
 pub(crate) fn run(command: SemanticCommand) -> Result<()> {
     match command {
         SemanticCommand::Train(arguments) => train(arguments),
+        SemanticCommand::Disambiguate {
+            retina,
+            word,
+            context,
+        } => {
+            let retina = Retina::load(retina)?;
+            print_json(&model(&retina)?.disambiguate(&context.query(word))?)
+        }
+        SemanticCommand::ContextualSimilar {
+            retina,
+            word,
+            context,
+            relation,
+            count,
+        } => {
+            let retina = Retina::load(retina)?;
+            let query = context.query(word);
+            print_json(&serde_json::json!({
+                "query": model(&retina)?.disambiguate(&query)?,
+                "relation": relation,
+                "matches": model(&retina)?.find_similar_contextual(&query, relation, count)?,
+            }))
+        }
+        SemanticCommand::CompareContexts { retina, pairs } => compare_contexts(retina, pairs),
         SemanticCommand::Senses {
             retina,
             word,
@@ -219,6 +299,24 @@ pub(crate) fn run(command: SemanticCommand) -> Result<()> {
             print_json(&events)
         }
     }
+}
+
+fn compare_contexts(retina_path: PathBuf, pairs_path: PathBuf) -> Result<()> {
+    let model_sha256 = super::quality::file_sha256(&retina_path)?;
+    let pairs_sha256 = super::quality::file_sha256(&pairs_path)?;
+    let retina = Retina::load(&retina_path)?;
+    let pairs = read_context_pairs(BufReader::new(File::open(&pairs_path)?))?;
+    let result = evaluate_context_pairs(model(&retina)?, &pairs)?;
+    if model_sha256 != super::quality::file_sha256(&retina_path)?
+        || pairs_sha256 != super::quality::file_sha256(&pairs_path)?
+    {
+        return Err(ProteusError::Config(
+            "Context evaluation inputs changed while being read".into(),
+        ));
+    }
+    print_json(
+        &serde_json::json!({ "model_sha256": model_sha256, "pairs_sha256": pairs_sha256, "evaluation": result }),
+    )
 }
 
 fn model(retina: &Retina) -> Result<&SemanticModel> {

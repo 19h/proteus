@@ -3,12 +3,22 @@
 //! Sparse fingerprints are retrieval features. The semantic scorer retains the
 //! sense graph and event bindings rather than inferring meaning from bit overlap.
 
+mod context;
+mod context_evaluation;
 mod corpus;
 mod evidence;
+mod information;
 mod lexicon;
 mod relations;
 mod training;
 
+pub use context::{
+    ByteSpan, ContextComparison, ContextSense, ContextualWord, PartOfSpeech, SensePrediction,
+};
+pub use context_evaluation::{
+    evaluate_context_pairs, read_context_pairs, ContextEvaluation, ContextMetrics, ContextPair,
+    ContextPairPrediction,
+};
 pub use corpus::{read_annotated_corpus, AnnotatedDocument, AnnotatedToken, ParserProvenance};
 pub use evidence::{Argument, Event, EventRole, EvidenceMatch, EvidenceStatus};
 pub use lexicon::{LexicalSense, Lexicon, LexiconSource, SenseLemma};
@@ -182,6 +192,8 @@ pub struct SemanticModel {
     pub(crate) events: Vec<Event>,
     #[serde(skip)]
     index: OnceLock<std::result::Result<Arc<lexicon::LexiconIndex>, String>>,
+    #[serde(skip)]
+    information_content: OnceLock<std::result::Result<Arc<Vec<f64>>, String>>,
 }
 
 impl SemanticModel {

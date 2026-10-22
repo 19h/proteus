@@ -12,6 +12,9 @@ training implementation or distribute its pretrained retinas.
 For typed lexical relevance, contextual senses and role-aware evidence search,
 use the new [knowledge-grounded backend](docs/semantic.md). It retains an explicit
 lexical graph and source evidence; its gains use external WordNet knowledge.
+[Target-aware comparison](docs/semantic.md#target-aware-contextual-comparison)
+and [information-content scoring](docs/semantic.md#information-content-similarity)
+provide explicit alternatives to context-free best-sense ranking.
 The reference SOM and distributional encoders remain separately available.
 
 ## Start with a corpus
@@ -43,7 +46,7 @@ splitter uses ONNX Runtime and may download its model when invoked. See the
 | Surface | Available behavior | Detail |
 | --- | --- | --- |
 | Corpus training | Bounded snippets, TF-IDF, optional seeded projection, online SOM and final word/cell folding | [Algorithm](docs/algorithm.md#contexts-and-features) |
-| Knowledge-grounded training | Explicit senses, typed lexical relations, contextual weights and attributed event search | [Semantic backend](docs/semantic.md) |
+| Knowledge-grounded training | Explicit senses, typed lexical relations, target-aware context comparison, information-content scores and attributed event search | [Semantic backend](docs/semantic.md) |
 | Distributional training | Local PPMI, spectral projection and non-spatial sparse angular codes | [Quality](docs/quality.md#non-spatial-distributional-retinas) |
 | Fingerprints | Roaring-backed SDRs, word/text composition, cosine, Jaccard and overlap measures | [Library](docs/library.md#sdrs-and-semantic-operations) |
 | Search | Exact cosine ranking, inverted index, cell and spatial neighbourhood lookup | [Queries](docs/cli.md#query-and-inspection-commands) |

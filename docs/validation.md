@@ -674,3 +674,171 @@ compatibility and formatting. The remaining scientific limits are larger-domain
 sense/event accuracy, rare-sense false matches, parser dependence, lexical/domain
 coverage and in-memory costs. No universal semantic accuracy, calibrated
 confidence or novel learning breakthrough is claimed.
+
+
+## Contextual and information-content extension
+
+Recorded 2026-10-22 against committed baseline `580020f`, without changing the
+reference SOM, angular encoder, default grounded score or existing model bytes.
+[The extended semantic contract](semantic.md#target-aware-contextual-comparison)
+specifies the public APIs, exact equations, assumptions C1-C4, error handling and
+complexity. This record separates an information-content similarity option from
+a target-aware contextual classifier; neither is a calibrated confidence model.
+
+### Native lexical measurements
+
+`information-similarity` applies a Lin-style common-information ratio using
+stored occurrence counts/sense priors plus one pseudo-occurrence per lexical
+sense. It counts distinct ancestors once under multiple inheritance and derives
+an immutable nonserialized cache. No coefficient was selected by a sweep.
+The comparison uses the same saved v5 retinas and observations as the previous
+best-sense scorer. All benchmark labels below were already inspected in prior
+work; these are development diagnostics, not a newly untouched lexical holdout.
+
+| Corpus / task | Common observations / total | Previous best-sense | Information-content |
+| --- | --- | --- | --- |
+| wiki / simlex | 961 / 999 | 0.4968 | 0.5376 |
+| wiki / simverb | 2,380 / 3,000 | 0.4290 | 0.4797 |
+| wiki / wordsim | 329 / 353 | 0.3667 | 0.3594 |
+| moby / simlex | 525 / 999 | 0.4815 | 0.5093 |
+| moby / simverb | 1,270 / 3,000 | 0.4430 | 0.4962 |
+| moby / wordsim | 130 / 353 | 0.4707 | 0.4411 |
+
+The maintained comparison script used all observations, 2,000 paired resamples
+and seed 42. WikiText correlation-difference intervals were [0.01836, 0.06624] for
+SimLex, [0.03690, 0.06480] for SimVerb and [-0.04931, 0.03252] for WordSim.
+These are descriptive pair-resampling intervals; repeated words and shared
+resources limit independence. WordSim declines, particularly on Moby-Dick.
+The scorer therefore remains explicit rather than replacing default scores.
+No universal relevance improvement or new similarity theory is claimed.
+
+### Contextual design selection and freeze
+
+The author WiC v1.0 package was retrieved from
+[the dataset page](https://pilehvar.github.io/wic/), including its schema and
+licensing README. Archive SHA-256:
+`f1a2fb67d903c5b9b1180f1035d4228f7c0254e8f5f868d556235457046bd4b2`.
+The local protocol was recorded before development scoring. Development data and
+labels were used for selection; the author test data/gold remained sealed in
+the archive until the final source/configuration and binary were frozen.
+
+Three Python development prototypes used approximately matching tokenization:
+legacy gloss MAP equality, POS/target-aware gloss MAP equality, and personalized
+PageRank over the limited existing parent/similar/antonym graph. Among 527
+covered development pairs, correct counts were 380, 418 and 295 respectively.
+A 50/50 gloss/PageRank posterior mixture gave 350 correct. The random-walk
+prototype used damping 0.85 and 40 iterations; it was not a full UKB replication,
+and does not falsify graph WSD generally. It was excluded from production.
+The target-aware gloss model was retained. Native tokenization changes one
+legacy development outcome relative to the approximate prototype.
+
+An initial native run rejected 29 otherwise covered inflected targets whose
+surface forms were not observed in the corpus. Those observations remained
+unavailable in the saved report. The interface was corrected before the test
+freeze to accept an explicitly supplied target lemma, requiring a byte range
+and matching the requested lexical identity. WiC supplies that lemma/POS; the
+model neither invents morphology nor runs a tagger during inference. The final
+native development run restores all 527 baseline-covered pairs. These changes
+jointly use known POS, target exclusion and supplied lemma annotations; results
+are not attributed to any one component in isolation.
+
+`freeze.json` records hashes of all Rust sources and the evaluation script,
+configuration and final binary. `test-opened.json` records the subsequent
+opening of the test split. Test evaluation was performed once with no model,
+threshold or parameter selection afterward. Classification is equality of the
+two independently conditioned MAP sense identities, not a fitted threshold.
+
+### Contextual outcomes and coverage
+
+Both baseline and candidate use the same v5 WikiText retina and lexical source.
+The baseline is the original context-gloss scorer without supplied POS or target
+exclusion; the candidate uses the author annotations described above.
+
+| Split | Covered / all observations | Baseline correct / covered | Target-aware correct / covered | Paired gains / losses |
+| --- | --- | --- | --- | --- |
+| Development | 527 / 638 | 381 / 527 (72.30%) | 418 / 527 (79.32%) | 60 / 23 |
+| Frozen test | 1,195 / 1,400 | 876 / 1,195 (73.31%) | 930 / 1,195 (77.82%) | 119 / 65 |
+
+Development has 111 unavailable observations; test has 205. Counting unavailable
+predictions as errors gives development accuracy 59.72% versus 65.52% and test
+accuracy 62.57% versus 66.43%. No unavailable observation is dropped from the
+report or assigned a successful prediction. Repeated observations remain in
+order. The complete native reports retain every label, prediction, selected
+sense, unknown reason and invalid-query error.
+
+Paired target-lemma bootstrap used 2,000 resamples and seed 42. The development
+difference interval was [0.03619, 0.10300] with 488 lemma clusters; test was
+[0.02211, 0.06811] with 991 clusters. These are descriptive accuracy differences,
+not percentage-point values; shared lexical resources can still induce
+cross-cluster dependence. This is a pair-label holdout, not resource-disjoint
+contextual generalization or a comparison against published WiC systems.
+
+### Lexical-source overlap audit
+
+The stored lexical glosses include WordNet definitions and examples, while WiC
+can use those examples as contexts. The evaluator checks normalized whole-context
+substrings with word boundaries against the exact same canonical lexical source,
+rejecting a different source hash. The initial permissive exploratory audit
+counted 573 development pairs with overlap; the maintained word-boundary audit
+counts 572. This audit has a declared case/NFD/alphanumeric normalization and
+identifies literal overlap, not all indirect resource contamination.
+
+The frozen test split has 1,227/1,400 pairs with at least one such context match:
+
+| Source-overlap stratum | All observations | Common covered | Baseline correct | Target-aware correct |
+| --- | --- | --- | --- | --- |
+| Neither complete context matches | 173 | 145 | 84 | 99 |
+| At least one complete context matches | 1,227 | 1,050 | 792 | 831 |
+| Both complete contexts match | 733 | 625 | 552 | 571 |
+
+The both-context row is a subset of the at-least-one row. In the neither-context
+stratum, covered accuracy rises from 84/145 (57.93%) to 99/145 (68.28%); the small
+sample and remaining shared knowledge limit interpretation. Absence of a literal
+match does not establish resource independence. This audit is a high-impact
+scientific boundary: the overall 77.82% figure must not be presented as evidence
+of unseen-domain language understanding or calibrated word-sense inference.
+
+### Correctness, compatibility and reproducibility
+
+Seven new Rust contract tests verify independent subtree-mass calculations,
+redundant DAG paths, zero/full-root information, POS separation, target removal,
+caller-supplied lemma handling, UTF-8/partial-word rejection, bilateral symmetry,
+uncertainty diagnostics, unavailable/error denominators, duplicate IDs, exact
+mixture ranking, zero k, loaded/mapped agreement, immutable-cache serialization
+and CLI argument/output wiring. Four standard-library Python tests cover target
+index conversion, label shape, lemma-cluster resampling, failed report publication
+and input/output alias protection. The three existing preparation tests pass.
+
+The full locked Rust suite passed: 226 unit/integration tests and 95 doctests,
+with six existing explicit skips. All-feature compilation and Clippy completed;
+no new contextual/information-module or test findings remain, while pre-existing
+older/vendored findings are retained. Scoped Rustfmt, Black, whitespace and local
+documentation links/anchors were checked. No additional neural or Rust GPU
+inference is involved in the new queries.
+
+Final native default WikiText predictions for SimLex, SimVerb and WordSim equal
+the previous saved reports exactly. Information-content predictions equal the
+pre-freeze development executable's reports. The same fixed retina/model hashes
+are used throughout; no retraining is needed for these explicit new query APIs.
+V5 layout and training algorithm identity are unchanged, and populated caches
+are absent from serialization. The host and optional preparation environment
+are those recorded in the preceding implementation record; current toolchain,
+source and artifact identities are captured again in the local manifest.
+
+Final executable SHA-256:
+`9bb5f9fe6334454b5e9ec69282e35cf87339406404903cff44483ff3ab24e05a`.
+
+`target/validation/contextual/` retains the protocol, failed development
+prototypes, original WiC archive/README, original split files, transformed JSONL,
+source-overlap audit, all native observations, per-lemma bootstrap intervals,
+lexical predictions, compatibility checks, source freeze and test-open record,
+command/timing logs and `manifest.json`. Outputs are published atomically, and
+the evaluator rejects an output path aliasing a source input. These local
+resources remain outside source control.
+
+Bounded findings: **high** — lexical-resource example overlap limits contextual
+claims, caller POS/lemma correctness remains an assumption, and best-sense
+candidate ambiguity persists. **Medium** — information-content cache construction
+adds first-query work/storage and helps similarity tasks while weakening the
+recorded association task. Calibration, contrastive training, richer event scope
+and domain-specific contextual evaluation remain research directions.

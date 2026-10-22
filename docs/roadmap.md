@@ -15,7 +15,8 @@ relations, contextual senses and explicit equivalence/contrast supervision,
 followed by sparse candidate retrieval with richer reranking. It includes
 information-loss counterexamples, an independent verb benchmark, costs and
 falsification criteria. The [grounded implementation](semantic.md) now provides typed relations,
-context-conditioned sense weights, inspectable examples and bound evidence search.
+context-conditioned sense weights, target-aware bilateral comparison,
+corpus-adapted information-content scoring, inspectable examples and bound evidence search.
 It uses explicit WordNet knowledge and parser annotations. Contrastive semantic
 learning, contextual calibration, a validated sparse retrieval cascade and
 large-domain entailment remain research proposals.

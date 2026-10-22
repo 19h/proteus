@@ -170,7 +170,12 @@ accuracy. Contextual weights and source examples remain inspectable.
 
 [The implementation validation](validation.md#knowledge-grounded-implementation)
 reports matched-coverage comparisons, score ablations and real-parser probes.
-Best-sense scores, expected scores and event support are different contracts;
+Target-aware contextual comparison and corpus-adapted information-content scoring
+extend this backend. [The follow-up validation](validation.md#contextual-and-information-content-extension)
+retains baseline/candidate coverage, resource-overlap strata and failed graph
+prototypes. WiC label holdout does not establish lexical-resource independence.
+
+Best-sense scores, information scores, expected scores and event support are different contracts;
 none is a calibrated truth or equivalence probability. Sparse ancestor features
 are used as bitmaps but do not define the exact grounded semantic score.
 

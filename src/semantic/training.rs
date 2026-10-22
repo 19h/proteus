@@ -320,6 +320,7 @@ pub fn train_semantic(
         documents,
         events,
         index: OnceLock::from(Ok(Arc::new(index))),
+        information_content: OnceLock::new(),
     };
     model.validate()?;
     let mut retina = Retina::with_index(fingerprints, config.dimension as u32, config.fingerprint);

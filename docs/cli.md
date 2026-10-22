@@ -121,6 +121,9 @@ These are native `proteus semantic` subcommands:
 | Subcommand | Required arguments | Optional query controls |
 | --- | --- | --- |
 | `train` | `-i ANNOTATIONS --lexicon JSON -o RETINA` | All [grounded training settings](semantic.md#configuration-fingerprints-and-persistence); `-i -` reads stdin |
+| `disambiguate` | `-r RETINA WORD --context TEXT` | `--pos noun`, paired `--target-start BYTE --target-end BYTE`, optional `--target-lemma WORD` |
+| `contextual-similar` | `-r RETINA WORD --context TEXT` | Same target controls; `--relation similarity`, `-k 10` |
+| `compare-contexts` | `-r RETINA --pairs JSONL` | Complete [context-pair schema](semantic.md#complete-contextual-evaluation), optional labels |
 | `senses` | `-r RETINA WORD` | `--context TEXT`, `--sense ID` |
 | `similar` | `-r RETINA WORD` | `--relation similarity`, `--context TEXT`, `--sense ID`, `-k 10` |
 | `score` | `-r RETINA LEFT RIGHT` | `--relation similarity`, `--context TEXT`, `--sense ID` |

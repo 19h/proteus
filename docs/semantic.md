@@ -99,6 +99,7 @@ semantic ranking. Ties use lexical order.
 | Relation | Dimensionless score / direction |
 | --- | --- |
 | `similarity` | Maximum sense-pair graph similarity without query context; with context, posterior-weighted per-query-sense maxima |
+| `information-similarity` | Maximum sense-pair corpus-adapted information-content score; [mass contract](#information-content-similarity) |
 | `expected-similarity` | Sum over query/candidate sense pairs weighted by their priors, or contextual query posterior |
 | `synonym` | Shared explicit sense; context can weight the query sense |
 | `antonym` | Explicit opposing sense edge, symmetrized at sense level |
@@ -146,6 +147,130 @@ the context marginal, coordinates are
 `max(0, ln((C(w,c)/R(w)) / (M(c)^alpha / sum_j M(j)^alpha)))`.
 Positive coordinates are sorted, truncated, then L2 normalized. This channel
 keeps topical/substitution evidence separate from the lexical taxonomy.
+
+## Target-aware contextual comparison
+
+The original `senses` and `similar --context` interfaces retain their saved v1
+interpretation. The explicit target-aware APIs add known-POS conditioning,
+UTF-8 target exclusion, bilateral comparison and ambiguity diagnostics. They
+reuse the stored gloss IDF and `sense_temperature`; no new parser or download
+runs during inference.
+
+```sh
+proteus semantic disambiguate -r grounded.retina bank \
+    --context 'bank river water shore' --pos noun \
+    --target-start 0 --target-end 4
+proteus semantic contextual-similar -r grounded.retina king \
+    --context 'male sovereign ruler of a kingdom' --pos noun \
+    --relation information-similarity -k 10
+```
+
+`ContextualWord` contains `word`, original `context`, optional `part_of_speech`
+(`noun`, `verb`, `adjective`, `adverb`) and optional `target: {start,end}`. The
+range uses original half-open UTF-8 byte offsets and must cover whole normalized
+words matching the requested word or an observed lemma form. Optional `target_lemma`
+is an explicit caller annotation for unobserved inflections; it requires a range
+and must match the requested word/known lemma. The caller supplies that linguistic
+annotation, just as it supplies POS; inference does not guess its correctness.
+CLI `--target-lemma` exposes this choice. The exact range is
+replaced by a space before scoring, preventing the target itself from supplying
+gloss evidence. An absent range means the entire supplied text is surrounding
+evidence; no occurrence is selected implicitly. CLI range endpoints require each
+other. POS is supplied by the caller, not inferred, and adjective satellites
+share adjective POS. Corpus-only vocabulary coverage remains explicit.
+
+Candidate priors are conditioned and renormalized on POS, then passed through
+the existing gloss-overlap equation. Results expose all source glosses, literal
+matching terms, selected MAP sense, normalized masses, entropy in nats and the
+largest-minus-second-largest mass. These are model-distribution diagnostics,
+not calibrated linguistic confidence. Zero overlap returns the conditioned prior;
+no lexical evidence returns a named unavailable reason.
+
+`compare_contexts(left,right)` conditions both usages independently. It returns
+MAP-sense equality, `sum_s p_left(s)*p_right(s)` for shared identities, and
+`sum_(s,t) p_left(s)*p_right(t)*taxonomy_similarity(s,t)`. The scalar equations are
+symmetric under argument reversal; f64 traversal rounding can differ. Even identical ambiguous contexts can have
+posterior agreement below 1; agreement is not a calibrated equivalence score.
+
+`find_similar_contextual` computes one query posterior for the entire ranking.
+It averages the declared relation score conditioned on each query sense. For
+similarity/information scoring, candidate senses use their maximum; expected
+similarity additionally uses candidate priors. Candidate polysemy therefore
+remains a limitation. Association is rejected because it has no sense-conditioned
+contract. All retained entries are scored and ties remain lexical.
+
+### Complete contextual evaluation
+
+`semantic compare-contexts -r FILE --pairs JSONL` evaluates both the legacy gloss
+baseline and target-aware MAP equality in one model load. Each line is:
+
+```json
+{"id":"bank-1","left":{"word":"bank","context":"bank money loan","part_of_speech":"noun","target":{"start":0,"end":4}},"right":{"word":"bank","context":"bank river shore","part_of_speech":"noun","target":{"start":0,"end":4}},"same_sense":false}
+```
+
+`same_sense` is optional. Unique IDs preserve separate repeated observations.
+Malformed JSON, duplicate IDs and file errors abort; invalid target queries are
+retained with error details and unavailable predictions. Reports include every
+row, labelled/available counts, covered accuracy, accuracy counting unavailable
+predictions as errors, common-coverage accuracies and paired improvements versus
+regressions. Undefined accuracy is `null`. The CLI checks model/pair hashes
+before and after execution.
+
+[`evaluate_contexts.py`](../scripts/evaluate_contexts.py) converts an explicitly
+supplied local WiC split and optional gold file into this schema. It records
+original UTF-8 ranges, author-supplied target lemmas/POS, all identities, the command and native predictions, and
+uses a paired bootstrap by target lemma. No split is downloaded or opened
+implicitly. `--lexicon` audits normalized complete-context substrings against the
+same lexical resource, rejecting mismatched resource hashes. The audit reports
+neither/one-or-both/both-context overlap strata without excluding any observation.
+Literal overlap identifies a resource-contamination risk, not a calibrated test
+of memorization. Output publication is atomic and cannot replace an input.
+
+```sh
+python3 scripts/evaluate_contexts.py --retina grounded.retina \
+    --data WiC/dev/dev.data.txt --gold WiC/dev/dev.gold.txt \
+    --lexicon wordnet.json --output wic-dev.json
+```
+
+WiC examples can come directly from WordNet. An unseen pair-label split does not
+make it resource-disjoint; contextual results must retain that limitation.
+[The follow-up validation](validation.md#contextual-and-information-content-extension)
+records development selection, source-overlap strata and frozen test evaluation.
+
+## Information-content similarity
+
+`--relation information-similarity` is an explicit Lin-style alternative to path
+depth. It uses retained corpus entry counts and sense masses, plus one
+pseudo-occurrence per lexical sense. Existing default scores and file semantics
+remain unchanged. For canonical POS `p`, let `S_p` be its lexical senses and
+`w(s) = 1 + sum_entries count(entry)*prior_entry(s)`. Then:
+
+```text
+N_p  = sum_(s in S_p) w(s)
+M(a) = sum_(s with ancestor a, including a itself) w(s)
+IC(a) = -ln(M(a) / N_p)
+sim(s,t) = 2 * max_common_ancestor IC(a) / (IC(s) + IC(t))
+```
+
+Each distinct ancestor receives a sense's mass once, even with multiple DAG
+paths. Ancestor probability is monotonic; a full POS root has IC 0. The lexical
+pseudo-occurrences prevent zero-probability/unseen-subtree collapse. Count mass
+includes retained phrases and is a modelled vocabulary-occurrence distribution,
+not a count of independently sampled raw tokens. The fixed unit prior is part
+of this named scorer, not selected by a parameter sweep.
+
+Identity remains 1; explicit antonyms remain 0 and explicit similar-to/verb-group
+edges retain the declared 0.9 override. Different POS or disconnected ancestry
+receive 0. Distinct senses with zero denominator receive 0. POS-inconsistent
+ancestry is rejected by this scorer. Thus these overrides and smoothing specify
+a local variant, not a claim of exact equivalence to every implementation of Lin.
+
+The information vector is derived lazily, cached immutably and omitted from
+serialization. All required counts, priors and graph edges already reside in v5
+models. Loaded and mapped queries agree without retraining or a format upgrade.
+Source training reports retain their original algorithm identity. Word-pair
+`semantic evaluate --relation information-similarity` declares the selected
+contract in `score_kind`.
 
 ## Bound evidence search
 
@@ -253,6 +378,14 @@ adds up to `O(VBA log(BA))` ordered accumulation/ranking work and
 and sense/event evidence add `O(SJ + T + C + OB + F)` space. Parser inference is
 additional work governed by the selected external model, not these Rust bounds.
 
+Information-content construction adds `O((S + VB) A)` mass accumulation and
+`O(S)` cache storage on first use; ancestor sets are already indexed. Subsequent
+information pair scores have the same ancestor-intersection order as depth scores.
+Target-aware disambiguation costs `O(BJ)` set work plus tokenization and
+`O(B log B)` sorting; bilateral comparison adds `O(B^2 A log A)`. Contextual
+ranking computes the posterior once, then scans all candidates; it is exhaustive.
+Context-pair evaluation retains `O(PB + input_bytes)` state for `P` pairs.
+
 One pair query costs up to `O(B^2 A log A)` graph lookup work, plus contextual
 overlap when requested. Exact ranking scores every vocabulary entry and sorts
 `O(V log V)` results; there is no sublinear latency claim. Evidence search scans
@@ -265,11 +398,20 @@ Saving/loading validates all retained metadata. Compression reduces disk size, n
 | ID | Assumption / dependent result | Stress or falsification probe |
 | --- | --- | --- |
 | S1 | Lexical relations are relevant to the intended word task; lexical quality depends on this. | Matched-coverage pair evaluation; stratify POS/domain; compare the corpus association channel and prior-weighted ablation. |
-| S2 | Gloss overlap selects useful senses; contextual results depend on this. | Opposed bank contexts and explicit sense controls; a larger contextual benchmark is still required. |
+| S2 | Gloss overlap selects useful senses; contextual results depend on this. | Opposed bank contexts and explicit sense controls; WiC is additionally evaluated with lexical-source overlap audited; resource-disjoint contextual accuracy remains unknown. |
 | S3 | Parser bindings preserve the intended assertion; evidence scores depend on this. | Real-parser active/passive, role reversal, polarity, modality and tense probes; audit original spans; reject unsupported scope. |
 | S4 | Best-sense comparison is useful despite polysemy; context-free ranking depends on this. | Compare expected similarity and contextual rankings; inspect rare-sense false matches and relation-specific neighbors. |
 | S5 | Prepared inputs identify complete resources; reproducibility depends on this. | Completion checksum, parser/resource hashes, byte-identical retraining, save/load/migration/mapped agreement and malformed metadata tests. |
 | S6 | The in-memory representation fits the workload; capacity claims depend on this. | Measure process memory and artifact sizes; enforce decoded metadata bounds; no corpus-size extrapolation. |
+
+The extension additionally records these assumptions and their dependent results:
+
+| ID | Assumption | Basis | Dependent result | Stress test | Falsification probe | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| C1 | Smoothed subtree mass is useful commonality for the target lexical task. | Retained corpus counts, adapted priors and monotonic ancestor probability. | Information-content rankings. | Rare/unseen senses and multiple ancestry paths. | Independent subtree-mass oracle and matched-coverage pair evaluation, including relatedness losses. | Numerical fixtures pass; task-specific empirical evidence is recorded separately. |
+| C2 | Supplied target POS, byte range and optional lemma are correct. | Explicit caller or dataset annotations. | Contextual inference. | Wrong POS, UTF-8 cuts, partial words and unobserved inflections. | Reject invalid ranges/identity; compare POS/target-conditioned inference on complete observations. | Validated for exercised schemas/fixtures; annotation correctness remains caller-dependent. |
+| C3 | Unseen pair labels measure useful contextual discrimination despite shared lexical resources. | Explicit train/dev/test boundaries, with WordNet-derived source examples. | Interpretation of WiC results. | Full-context source overlap and missing corpus words. | Report overlap strata, OOV/error denominators, paired changes and lemma-cluster intervals. | Pair-label holdout does not establish resource-disjoint generalization; that remains unknown. |
+| C4 | New scoring can reuse v5 evidence without altering old scores or bytes. | Derived immutable caches omitted from serialization; explicit query methods. | Compatibility and reproducibility. | Cold/warm caches, loaded/mapped readers and save/reload. | Compare saved bytes and archived default predictions. | Fixture coverage passes; runtime identity is included in the validation record. |
 
 | Impact | Adjacent opportunity or limit | Bound |
 | --- | --- | --- |
@@ -291,6 +433,8 @@ separates those mechanics from corpus measurements and their limitations.
 - [Princeton WordNet](https://wordnet.princeton.edu/) and its [license](https://wordnet.princeton.edu/license-and-commercial-use): explicit English lexical evidence, retained in exports.
 - [NLTK WordNet interface](https://www.nltk.org/howto/wordnet.html): synsets, lemma counts and lexical relation access.
 - [Wu and Palmer, 1994](https://aclanthology.org/P94-1019/), DOI [10.3115/981732.981751](https://doi.org/10.3115/981732.981751): taxonomy-based similarity predecessor; the exact local variant is specified above.
+- [Lin, 1998, An Information-Theoretic Definition of Similarity](https://www.cs.swarthmore.edu/~richardw/classes/cs65/f08/litreview/phyo.pdf): information/commonality predecessor; local mass estimation and overrides are specified above.
+- [WiC author dataset and README](https://pilehvar.github.io/wic/): same-meaning task, target indices, explicit labels and source limitations.
 - [spaCy English pipelines](https://spacy.io/models/en) and [model installation](https://spacy.io/usage/models): explicit dependency annotation resources.
 
 No source establishes the empirical quality of this implementation; that requires

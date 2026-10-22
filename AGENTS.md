@@ -252,6 +252,8 @@ Trace actual callers and feature gates for the requested behavior.
 | `src/storage/retina.rs` | Loaded model, query behavior and metadata access |
 | `src/semantic/mod.rs`, `src/semantic/training.rs` | Grounded config/report, validation, corpus sense adaptation and observed lexical features |
 | `src/semantic/corpus.rs`, `src/semantic/lexicon.rs` | Complete attributed annotations, resource schemas and bounded graph validation |
+| `src/semantic/context.rs`, `src/semantic/context_evaluation.rs` | Explicit POS/byte-target inference, bilateral comparisons and complete-observation contextual evaluation |
+| `src/semantic/information.rs`, `scripts/evaluate_contexts.py` | Derived information-content scores, nonserialized cache, WiC conversion and resource-overlap audit |
 | `src/semantic/relations.rs`, `src/semantic/evidence.rs` | Typed word scores, contextual senses, grammatical role binding and evidence states |
 | `src/cli/semantic.rs`, `scripts/prepare_semantic.py` | Native grounded commands and explicit external-resource preparation |
 | `src/storage/format.rs` | Serialized layout, validation, writers and mapped retina |
@@ -513,6 +515,12 @@ remain v4. Loaded/mapped/migration paths preserve graph scores, original sources
 and annotations. Rich mapped metadata still allocates; only bitmap storage is
 mapped. `tests/semantic_contract.rs` covers these boundaries, and
 `tests/test_prepare_semantic.py` covers preparation offsets/hashes/publication.
+Contextual APIs retain original UTF-8 target ranges and explicit POS. Preserve
+legacy scoring and unavailable observations when changing query inference.
+Information content is derived from immutable corpus/lexical evidence and is not
+serialized. Benchmark pair holdout does not imply lexical-resource disjointness;
+audit source-context overlap and report all strata. `tests/contextual_contract.rs`
+and `tests/test_evaluate_contexts.py` own these contracts.
 See [the grounded contract](docs/semantic.md) before changing extraction, scoring
 or resource schemas. Grounded exact word ranking uses the graph; legacy text
 pooling and bitmap APIs remain distinct. Never describe a lexical-resource gain

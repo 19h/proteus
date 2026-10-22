@@ -12,6 +12,8 @@ pub enum Relation {
     Similarity,
     /// Prior-weighted average of all sense-pair taxonomy scores.
     ExpectedSimilarity,
+    /// Best sense-pair information-content similarity with corpus-adapted mass.
+    InformationSimilarity,
     /// Whether a pair shares an explicit lexical sense.
     Synonym,
     /// Whether a pair has an explicit opposition edge in the lexical source.
@@ -31,6 +33,7 @@ impl std::str::FromStr for Relation {
         match value {
             "similarity" => Ok(Self::Similarity),
             "expected-similarity" => Ok(Self::ExpectedSimilarity),
+            "information-similarity" => Ok(Self::InformationSimilarity),
             "synonym" => Ok(Self::Synonym),
             "antonym" => Ok(Self::Antonym),
             "hypernym" => Ok(Self::Hypernym),
@@ -251,6 +254,9 @@ impl SemanticModel {
             for right_sense in &right.senses {
                 let right_id = sense_id(index, &right_sense.sense)?;
                 let score = match relation {
+                    Relation::InformationSimilarity => {
+                        self.information_similarity(left_id, right_id)?
+                    }
                     Relation::Similarity | Relation::ExpectedSimilarity => {
                         index.sense_similarity(left_id, right_id, &self.lexicon)
                     }
@@ -340,6 +346,7 @@ impl SemanticModel {
                             relation,
                             Relation::Similarity
                                 | Relation::ExpectedSimilarity
+                                | Relation::InformationSimilarity
                                 | Relation::Association
                         )
                     {

@@ -117,6 +117,20 @@ fn main() -> Result<()> {
 }
 ```
 
+`ContextualWord`, `ByteSpan` and `PartOfSpeech` describe an explicit target-aware
+query. `disambiguate` returns inspectable sense masses and uncertainty diagnostics;
+`compare_contexts` independently conditions both sides. `find_similar_contextual`
+reuses one query posterior while ranking all retained words. `read_context_pairs`
+and `evaluate_context_pairs` expose complete-observation paired evaluation.
+[Target validation and score semantics](semantic.md#target-aware-contextual-comparison)
+include UTF-8 byte ranges, POS filtering, unavailable evidence and their limits.
+
+`Relation::InformationSimilarity` derives smoothed sense/ancestor information
+from persisted corpus counts and priors. The cache is not serialized; old v5
+models support the new explicit score without changing their default ranking.
+[Its exact equation](semantic.md#information-content-similarity) includes unit
+lexical smoothing, unique ancestor accumulation and relation overrides.
+
 `score`/`similarity` return `None` for unavailable relation evidence, distinct
 from zero. `search_evidence` accepts one validated `AnnotatedDocument`, a result
 count and nonnegative conflict penalty. `read_annotated_corpus` checks completion
