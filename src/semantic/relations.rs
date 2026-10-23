@@ -1,6 +1,6 @@
 //! Separate lexical-relation scores and context-conditioned sense explanations.
 
-use super::SemanticModel;
+use super::{information::canonical_pos, PartOfSpeech, SemanticModel};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 
@@ -178,6 +178,47 @@ impl SemanticModel {
         candidate: &str,
         relation: Relation,
     ) -> Result<Option<SemanticMatch>> {
+        self.score_filtered(query, candidate, relation, None)
+    }
+
+    /// Score both words within a caller-supplied lexical POS. Missing compatible
+    /// senses return None. Both prior distributions are conditioned on that POS;
+    /// association has no sense-level POS interpretation and is rejected.
+    pub fn score_with_pos(
+        &self,
+        query: WordQuery<'_>,
+        candidate: &str,
+        relation: Relation,
+        part_of_speech: PartOfSpeech,
+    ) -> Result<Option<SemanticMatch>> {
+        if relation == Relation::Association {
+            return Err(query_error(
+                "POS-conditioned scoring requires a lexical relation",
+            ));
+        }
+        self.score_filtered(query, candidate, relation, Some(part_of_speech))
+    }
+
+    /// Word-pair counterpart of score_with_pos, with no query context or sense override.
+    pub fn similarity_with_pos(
+        &self,
+        left: &str,
+        right: &str,
+        relation: Relation,
+        part_of_speech: PartOfSpeech,
+    ) -> Result<Option<f64>> {
+        Ok(self
+            .score_with_pos(WordQuery::new(left), right, relation, part_of_speech)?
+            .map(|result| result.score))
+    }
+
+    fn score_filtered(
+        &self,
+        query: WordQuery<'_>,
+        candidate: &str,
+        relation: Relation,
+        part_of_speech: Option<PartOfSpeech>,
+    ) -> Result<Option<SemanticMatch>> {
         let Some(word) = self.normalize(query.word) else {
             return Ok(None);
         };
@@ -223,20 +264,58 @@ impl SemanticModel {
             return Ok(None);
         }
         let index = self.index()?;
-        let candidates: Vec<_> = left
-            .senses
+        let compatible = |sense: &super::SenseEvidence| -> Result<bool> {
+            let id = sense_id(index, &sense.sense)?;
+            Ok(part_of_speech.is_none_or(|pos| {
+                canonical_pos(&self.lexicon.senses[id].pos) == pos.lexical_code()
+            }))
+        };
+        let mut left_senses = Vec::new();
+        let mut right_senses = Vec::new();
+        for (source, output) in [
+            (&left.senses, &mut left_senses),
+            (&right.senses, &mut right_senses),
+        ] {
+            for sense in source {
+                if compatible(sense)? {
+                    output.push(sense);
+                }
+            }
+        }
+        if let Some(selected) = query.sense {
+            if !left_senses.iter().any(|sense| sense.sense == selected) {
+                return Err(query_error(
+                    "Selected sense does not belong to the query entry and POS",
+                ));
+            }
+        }
+        if left_senses.is_empty() || right_senses.is_empty() {
+            return Ok(None);
+        }
+        let left_mass: f64 = left_senses.iter().map(|sense| sense.prior).sum();
+        let right_mass: f64 = right_senses.iter().map(|sense| sense.prior).sum();
+        let candidates: Vec<_> = left_senses
             .iter()
             .map(|sense| Ok((sense_id(index, &sense.sense)?, sense.prior)))
             .collect::<Result<_>>()?;
         let weights = if let Some(context) = query.context {
             index.posterior(&candidates, context, &self.report.config)
         } else {
-            left.senses.iter().map(|sense| sense.prior).collect()
+            left_senses
+                .iter()
+                .map(|sense| {
+                    if part_of_speech.is_some() {
+                        sense.prior / left_mass
+                    } else {
+                        sense.prior
+                    }
+                })
+                .collect()
         };
         let mut best = (0.0_f64, None, None);
         let mut aggregate = 0.0;
         let mut selected_found = query.sense.is_none();
-        for (left_sense, posterior) in left.senses.iter().zip(weights) {
+        for (left_sense, posterior) in left_senses.iter().zip(weights) {
             if query
                 .sense
                 .is_some_and(|selected| selected != left_sense.sense)
@@ -251,7 +330,7 @@ impl SemanticModel {
             };
             let left_id = sense_id(index, &left_sense.sense)?;
             let mut per_sense_best = 0.0_f64;
-            for right_sense in &right.senses {
+            for right_sense in &right_senses {
                 let right_id = sense_id(index, &right_sense.sense)?;
                 let score = match relation {
                     Relation::InformationSimilarity => {
@@ -283,7 +362,12 @@ impl SemanticModel {
                 }
                 per_sense_best = per_sense_best.max(score);
                 if relation == Relation::ExpectedSimilarity {
-                    aggregate += posterior * right_sense.prior * score;
+                    let candidate_prior = if part_of_speech.is_some() {
+                        right_sense.prior / right_mass
+                    } else {
+                        right_sense.prior
+                    };
+                    aggregate += posterior * candidate_prior * score;
                 }
             }
             if query.context.is_some()

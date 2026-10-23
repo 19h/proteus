@@ -842,3 +842,194 @@ candidate ambiguity persists. **Medium** — information-content cache construct
 adds first-query work/storage and helps similarity tasks while weakening the
 recorded association task. Calibration, contrastive training, richer event scope
 and domain-specific contextual evaluation remain research directions.
+
+## Observed lemma and POS inventory
+
+This extension starts from committed `3dc5c55` with the source changes recorded
+under `target/validation/ranking/`. These are development comparisons: the
+SimLex, SimVerb and WordSim observations were already inspected in earlier work.
+No reused split is relabelled as a new holdout. The existing WordNet/parser
+resource assumptions and contextual resource-overlap limitations still apply.
+
+### Rejected taxonomy-only prototypes
+
+The Moby `king.n.01`/`writer.n.01` match shares `communicator.n.01` through the
+WordNet hierarchy. Its information score exceeded the closer `emperor.n.01`
+relationship. Seven bounded alternatives were checked before the production
+scope was selected. None improved both similarity tasks on both corpora.
+The following Wikipedia figures are descriptive Spearman correlations; coverage
+is 961/999 for SimLex and 2,380/3,000 for SimVerb throughout this table.
+
+| Prototype | SimLex | SimVerb |
+| --- | --- | --- |
+| Existing corpus-adapted information score | 0.537577 | 0.479707 |
+| Joint shared-information and ancestor-path product | 0.540832 | 0.470885 |
+| Lexical-descendant information only | 0.537376 | 0.478109 |
+| Distinct ancestor-set Dice | 0.496937 | 0.430614 |
+| Inverse-distance ancestor cosine | 0.540782 | 0.476095 |
+| Existing depth/distance coordinates before bitmap folding | 0.540785 | 0.469573 |
+| Bounded inverse information distance | 0.537061 | 0.482159 |
+| Leaf/subsumer intrinsic-information variant | 0.522899 | 0.464159 |
+
+These are local variants, not claims of full replication of every published
+measure. The frozen formulas, scripts, all retained predictions and logs are
+under `target/validation/ranking/`, including unsuccessful comparisons. The
+initial path prototype's WordSim lookup did not reproduce native normalization;
+its incomplete WordSim coverage is not used as a native quality result. All
+production measurements below use the Rust evaluator. No new taxonomy formula
+or fitted coefficient is shipped from this search.
+
+### Source-compatible training
+
+The implemented `--sense-inventory observed` requires a compatible parser lemma
+and POS **per occurrence**, with lemma precedence and a unique phrase head.
+Compatible-occurrence counts govern both adapted priors and information mass.
+Unsupported entries remain in the vocabulary and association channel. This
+establishes annotation compatibility, not a proof of same-POS word-sense accuracy.
+The default lexical inventory and its original interpretation are preserved.
+
+The first source-compatible release executable is
+`target/validation/ranking/observed/proteus-observed-final`, SHA-256
+`76cf86fb54246fb000a69a3a93815f5d891cf2715be00e1c285da042f43e42fc`.
+Its source freeze, commands, input hashes and completion record are retained in
+that directory. The run used nightly
+`rustc 1.100.0-nightly (f248f4038 2026-09-05)`, locked dependencies, default
+features and the committed release profile, on an Apple M4 Max, macOS 27.2,
+16 cores and 128 GB RAM. Native training was sequential; parser preparation was
+reused and is excluded from these timings. No runtime speedup is inferred.
+
+The inputs are exactly the previously prepared `moby-trf.jsonl`, `wiki-trf.jsonl`
+and WordNet export. Their canonical corpus hashes remain
+`8bf14fe863f86abf2d379c77d79b93050b1df050fa25a4e8af33b46202da7c42`
+and `aa58a10fcff293957ac465393ecbc1a9ebb8ca937c459c6a74309d2cd0e0c98e`;
+the canonical lexical hash remains
+`4cc1af3597bd051fdcbea24378106e1f0581487290bdb0b69afb1d5b862f06fc`.
+Source texts, token counts, vocabulary and extracted events remain identical.
+
+| Result | Moby | Wikipedia |
+| --- | --- | --- |
+| Retained vocabulary | 10,375 | 43,755 |
+| Entries with compatible senses | 9,336 | 30,024 |
+| Model bytes | 17,595,886 | 71,519,446 |
+| Native training wall time, one run | 12.71 s | 82.51 s |
+| Maximum RSS from `/usr/bin/time -l` | 871,628,800 B | 3,128,868,864 B |
+
+The model SHA-256 values are
+`7d3aae453756c142afe20b40531ab0c37166f34cedbc518c2404b8439a98d5e8`
+(Moby) and `92bfea7d8da95e8bd5ff0bf690693469454fcc11f9e546b87e6d44e3af61c974`
+(Wikipedia). Both persist the distinct
+`knowledge-grounded-observed-senses-events-v2` report in a v5 container.
+
+Every correlation below uses the **same common covered observations** in both
+columns. Original and new covered counts are shown against the complete dataset.
+The complete 12 comparisons, both relation kernels and all missing predictions
+are in `observed/metrics.json` and the individual native reports.
+
+| Corpus / task | Original / observed coverage | Information original | Information observed |
+| --- | --- | --- | --- |
+| Moby SimLex | 525 / 519 of 999 | 0.510942 | 0.509012 |
+| Moby SimVerb | 1,270 / 1,270 of 3,000 | 0.496205 | 0.453055 |
+| Moby WordSim | 130 / 128 of 353 | 0.455191 | 0.461050 |
+| Wikipedia SimLex | 961 / 960 of 999 | 0.536874 | 0.540953 |
+| Wikipedia SimVerb | 2,380 / 2,380 of 3,000 | 0.479707 | 0.458704 |
+| Wikipedia WordSim | 329 / 329 of 353 | 0.359430 | 0.366701 |
+
+This does **not** establish a general similarity improvement: both verb tasks
+regress, and some lexical coverage is lost. The mode remains explicit and opt-in
+for corpus-annotation fidelity. In Moby, `writer` still precedes `emperor` under
+information scoring. The biblical `ahab.n.01` remains an available proper-name
+interpretation; identifying the novel's captain as a new sense remains unresolved.
+The Wikipedia noun-context illustration returns `kings`, `rex`, `monarch`,
+`monarchs`, `sovereign`, `sovereigns`, `ruler`, `rulers`, `chief of state`, and
+`head of state`. These neighbors are illustrations, not a retrieval benchmark.
+
+### Pair-POS conditioning
+
+The source-compatible experiment also exposed a distinct evaluation boundary:
+SimLex and SimVerb supply a grammatical POS column, but the original evaluator
+maximized across all lexical POS. The implemented `--pos-column` compares the
+same kernel and original v5 models within the author-supplied POS. Both words'
+priors are renormalized for expected similarity. Every report preserves each
+annotation and duplicate row, hashes its inputs, declares `:pair-pos` in
+`score_kind`, and retains unavailable predictions in the total denominator.
+This adds task information; it is not a causal isolation of a better taxonomy
+kernel or automatic POS inference.
+
+The final executable, including the POS API and evaluator, is
+`target/validation/ranking/final/proteus-final`, SHA-256
+`b9dfa40a97b7e94440cb7aa7c3f741b58c1b582fcfaf28a0e34942fc8475ed43`.
+Its independent source freeze, complete commands, hashes and all predictions are
+under `target/validation/ranking/final/`. The compiler, host and release profile
+are as above. Native results on the **original lexical-inventory models** are:
+
+| Corpus / task | Covered / total, both methods | Depth original | Depth + POS | Information original | Information + POS |
+| --- | --- | --- | --- | --- | --- |
+| Moby SimLex | 525 / 999 | 0.481471 | 0.487917 | 0.509326 | 0.517349 |
+| Moby SimVerb | 1,270 / 3,000 | 0.443011 | 0.475050 | 0.496205 | 0.496367 |
+| Wikipedia SimLex | 961 / 999 | 0.496844 | 0.502604 | 0.537577 | 0.543520 |
+| Wikipedia SimVerb | 2,380 / 3,000 | 0.429032 | 0.476994 | 0.479707 | 0.490237 |
+
+All point estimates improve on unchanged coverage, with no newly fitted metric
+parameters. Additional POS annotations are the changed input. The small
+information-score effects do not establish a general improvement: their paired
+bootstrap intervals include zero. The following intervals use
+`scripts/compare_quality.py --split all --resamples 2000 --seed 42` on identical
+ordered covered observations. Pair resampling is descriptive because observations
+share words; it does not establish independent-domain generalization or correct
+for the exploratory comparisons above.
+
+| Corpus / task / kernel | Delta Spearman | Descriptive 95% percentile interval |
+| --- | --- | --- |
+| Moby SimVerb / depth | +0.032039 | [0.002750, 0.061158] |
+| Wikipedia SimVerb / depth | +0.047961 | [0.027292, 0.066856] |
+| Moby SimLex / information | +0.008023 | [-0.006997, 0.027436] |
+| Moby SimVerb / information | +0.000162 | [-0.017691, 0.018547] |
+| Wikipedia SimLex / information | +0.005944 | [-0.002662, 0.016633] |
+| Wikipedia SimVerb / information | +0.010530 | [-0.001936, 0.022156] |
+
+For example, the native annotated comparison is reproducible with:
+
+```sh
+target/validation/ranking/final/proteus-final semantic evaluate \
+    -r target/validation/semantic/wiki.retina \
+    --pairs target/validation/theory/SimVerb-3000-test.txt \
+    --score-column 4 --pos-column 3 --relation similarity
+```
+
+### Contracts, compatibility and quality gates
+
+The final `cargo +nightly test --locked` run passed 330 tests/doctests, with six
+existing skips (one neural segmenter unit test and five documentation examples).
+The affected targets include ten contextual contracts and six new
+`observed_inventory` contracts. Independent fixtures establish occurrence-mass
+accounting, information mass, bilateral prior conditioning, mixed POS, lemma
+precedence, unsupported tags, phrase heads, duplicate rows, unavailable
+predictions, forged inventories, deterministic files, CLI wiring and mapped reads.
+The suite also exercises the existing numerical, legacy-format and reader paths.
+
+`cargo +nightly check --locked --all-features` passed. Clippy completed with
+existing warnings; no diagnostics identify the changed Rust files. Scoped
+nightly rustfmt and `git diff --check` passed. The repository-wide formatter
+check exposes pre-existing formatting debt; unrelated files were not restyled.
+Maintained documentation links, anchors and backlinks were checked separately.
+No GPU-kernel execution, new parser preparation, fresh WiC evaluation or new
+resource-disjoint semantic holdout is claimed.
+
+The final native executable reproduced **all predictions** in twelve archived
+ordinary evaluations: both corpora, all three word tasks, and both depth and
+information kernels. Original Moby and Wikipedia models survived migration
+byte-for-byte. Moby observed-mode retraining reproduced the earlier observed
+model byte-for-byte. The prior semantic executable rejected the new observed
+report identity with exit 1. Input and frozen-source hashes remained unchanged
+through each recorded experiment. These establish the exercised compatibility
+boundaries, not every possible historical artifact.
+
+| Gate | Evidence and bound |
+| --- | --- |
+| QG1 | Technical implementation and measurement only. |
+| QG2 | Assumptions C5/C6 and their source, stress cases, dependent results and falsification probes are in the semantic guide; earlier assumptions remain applicable. |
+| QG3 | Explicit inventory/config/report/reader path, bilateral scoring API, annotated evaluator, tests and affected documentation are implemented. |
+| QG4 | Dimensionless scores, occurrence units, nats, complexity, exact commands, hashes and common-coverage denominators are recorded. |
+| QG5 | Invalid annotations/accounting are rejected; legacy defaults are retained. Same-POS ambiguity and mistaken proper-name senses remain explicit limitations. |
+| QG6 | Source hashes and native predictions support measurements; the maintained guide cites primary POS and lexical-resource definitions. |
+| QG7 | High-impact inventory coverage losses and verb regressions prevent a default change; same-POS/proper-name attribution remains a bounded research opportunity. |

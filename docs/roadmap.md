@@ -17,6 +17,9 @@ information-loss counterexamples, an independent verb benchmark, costs and
 falsification criteria. The [grounded implementation](semantic.md) now provides typed relations,
 context-conditioned sense weights, target-aware bilateral comparison,
 corpus-adapted information-content scoring, inspectable examples and bound evidence search.
+Explicit pair-POS conditioning and opt-in parser-compatible training inventories
+are also implemented. Their [measured gains and regressions](validation.md#observed-lemma-and-pos-inventory)
+do not resolve same-POS ambiguity or proper-name sense attribution.
 It uses explicit WordNet knowledge and parser annotations. Contrastive semantic
 learning, contextual calibration, a validated sparse retrieval cascade and
 large-domain entailment remain research proposals.

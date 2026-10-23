@@ -89,7 +89,7 @@ unknown formats. Loading a different annotation policy is a model change.
 
 All word queries use the saved normalization and retained corpus vocabulary.
 Known phrases in the lexical source are counted over spans of at most five
-parser tokens by default. Surface forms and their observed parser lemmas supply
+parser tokens by default. In the default `lexical` inventory, surface forms and their observed parser lemmas supply
 candidate senses. Global entries retain all candidate senses, including senses
 without confident corpus examples; no occurrence is presented as evidence for
 an unobserved meaning. Unsupported lexical pairs return `null`, distinct from a
@@ -111,6 +111,29 @@ Strict relation queries return positive members only. Similarity, expected
 similarity and association can include zero scores to fill the requested count.
 Explicit `--sense ID` checks membership and conditions the query on that sense.
 Candidate ambiguity remains explicit in the best-pair and expected contracts.
+
+`semantic score --pos noun` and library `score_with_pos`/`similarity_with_pos`
+condition **both** words on caller-supplied POS. The same declared relation kernel
+then applies; expected scores renormalize both prior distributions, while best-pair
+scores maximize only over compatible senses. Missing compatible evidence is
+`null`; an explicitly selected incompatible sense is an error. Association is
+rejected because it has no sense-level POS interpretation. The CLI's explicit
+POS form returns `{part_of_speech, relation, match}`; the original form retains
+its existing output. No tagger or inference of task POS runs implicitly.
+
+`semantic evaluate --pos-column 3 --score-column 4` reads the author-supplied POS
+shared by each pair's words. It accepts lexical POS codes/names case-insensitively,
+retains every repeated observation and writes its `part_of_speech` beside the
+prediction. Unknown tags, invalid columns and malformed scores abort. Reports
+identify `pos_column` and `score_kind` ending in `:pair-pos`, retaining the usual
+source hashes, nullable predictions and full denominators. Without this option,
+the previous evaluation contract remains unchanged. POS is additional task
+information; this comparison does not isolate a change in the similarity kernel.
+
+```sh
+proteus semantic evaluate -r grounded.retina --pairs SimLex-999.txt \
+    --header --score-column 4 --pos-column 3 --relation information-similarity
+```
 
 For senses `s,t`, graph similarity is 1 for identity, 0 for an explicit opposition
 edge, and 0.9 for an explicit similar-to/verb-group edge. The constant 0.9 is a
@@ -147,6 +170,69 @@ the context marginal, coordinates are
 `max(0, ln((C(w,c)/R(w)) / (M(c)^alpha / sum_j M(j)^alpha)))`.
 Positive coordinates are sorted, truncated, then L2 normalized. This channel
 keeps topical/substitution evidence separate from the lexical taxonomy.
+
+## Observed lemma and POS inventory
+
+`semantic train --sense-inventory observed` constructs an inventory compatible
+with the actual parser annotations. The default `lexical` mode retains the v1
+surface/lemma union and all lexical POS. This choice requires retraining; loading
+an existing model does not invent missing occurrence evidence.
+
+```sh
+proteus semantic train -i annotations.jsonl --lexicon wordnet.json \
+    -o observed.retina --sense-inventory observed
+```
+
+For each occurrence, the observed mode looks up its normalized parser lemma.
+Only when that lemma has no lexical lookup key does it fall back to the surface
+form. A known lemma with an incompatible POS does not trigger that fallback.
+This distinguishes `saw/see/VERB` from `saw/saw/NOUN`, while preserving both
+interpretations when both occur. Lexical source lookup still supplies candidate
+meanings; POS agreement does not establish which same-POS sense was intended.
+
+| Parser POS | Compatible lexical POS |
+| --- | --- |
+| `NOUN`, `PROPN` | `n` |
+| `VERB`, `AUX` | `v` |
+| `ADJ` | `a`, `s` |
+| `ADV` | `r` |
+| All others, including `X` | No compatible sense evidence |
+
+A recognized multiword phrase uses its surface phrase as lexical key and the
+POS of its unique dependency head: the one token whose governor lies outside
+the span, or is itself. Multiple heads yield no sense evidence. Phrase recognition
+and bounds remain unchanged; no inflected phrase or head is guessed.
+
+The entry inventory is the union of these compatible occurrence candidates.
+Each occurrence posterior is normalized **within its own** candidate subset;
+one verbal occurrence cannot supply mass to a noun candidate retained from
+another occurrence. Unknown POS, incompatible lemmas and ambiguous phrase heads
+contribute zero sense mass. They still count as surface occurrences and retain
+their association observations. This is an evidence boundary, not a stopword
+filter: every vocabulary entry remains inspectable.
+
+`SemanticEntry.sense_occurrences` records the number `K` of occurrences with
+nonempty compatible candidates. Adaptation uses
+`(prior_strength*p0(s) + occurrence_mass(s))/(prior_strength + K)`;
+the masses sum to `K`, and the adapted priors sum to 1. Information-content
+accumulation uses `K*prior(s)` instead of all surface occurrences. Source examples
+are selected from the conditioned posteriors. Original annotations, source hashes,
+event extraction, PPMI observations and vocabulary counts remain the same.
+
+The report identifies `knowledge-grounded-observed-senses-events-v2` and persists
+`sense_inventory: observed`. The container remains v5. Readers reconstruct the
+inventory, lemma set and compatible-occurrence counts from original annotations
+and reject disagreements or inconsistent algorithm/configuration identities.
+Absent inventory settings mean `lexical`; absent `sense_occurrences` is valid
+only for that original contract. New optional fields are omitted in lexical
+serialization, preserving old model bytes. Older semantic binaries reject the
+new report identity rather than silently applying v1 interpretation.
+
+Parser annotation correctness is an explicit assumption. A noun-only corpus
+cannot establish an unobserved verb meaning; this can reduce pair coverage.
+Same-POS ambiguity, mistaken proper-name senses and generic shared ancestry
+remain unresolved. See the [matched-coverage measurements](validation.md#observed-lemma-and-pos-inventory)
+before treating this source-fidelity guarantee as a general semantic-quality gain.
 
 ## Target-aware contextual comparison
 
@@ -243,7 +329,8 @@ records development selection, source-overlap strata and frozen test evaluation.
 depth. It uses retained corpus entry counts and sense masses, plus one
 pseudo-occurrence per lexical sense. Existing default scores and file semantics
 remain unchanged. For canonical POS `p`, let `S_p` be its lexical senses and
-`w(s) = 1 + sum_entries count(entry)*prior_entry(s)`. Then:
+`w(s) = 1 + sum_entries K(entry)*prior_entry(s)`, where `K` is the surface count
+in lexical mode and `sense_occurrences` in observed mode. Then:
 
 ```text
 N_p  = sum_(s in S_p) w(s)
@@ -336,6 +423,7 @@ and platform; it does not have a random seed or SOM update count.
 | `--lexical-prior-strength` | 5 | Prior pseudo-occurrence mass |
 | `--min-sense-support` | 0.5 | Example/support bookkeeping threshold |
 | `--sense-temperature` | 0.15 | Positive gloss-overlap temperature |
+| `--sense-inventory` | lexical | Original lexical possibilities or observed lemma/POS-compatible candidates |
 | `--sparsity` | 0.02 | Upper active-bit fraction |
 | `--max-active-bits` | No extra cap | Additional absolute bit cap |
 
@@ -377,6 +465,11 @@ adds up to `O(VBA log(BA))` ordered accumulation/ranking work and
 `O(V min(G,BA))` stored bit positions. Glosses, source annotations, associations
 and sense/event evidence add `O(SJ + T + C + OB + F)` space. Parser inference is
 additional work governed by the selected external model, not these Rust bounds.
+Observed inventory construction and conditioning add at most `O(OL + OB^2)`
+head/candidate work with the current explicit candidate-subset scans;
+loaded validation repeats the occurrence census, with `O(VB)` inventory storage
+and the same phrase-tokenization order as training. Its additional load cost is
+included in the measured end-to-end commands.
 
 Information-content construction adds `O((S + VB) A)` mass accumulation and
 `O(S)` cache storage on first use; ancestor sets are already indexed. Subsequent
@@ -412,12 +505,15 @@ The extension additionally records these assumptions and their dependent results
 | C2 | Supplied target POS, byte range and optional lemma are correct. | Explicit caller or dataset annotations. | Contextual inference. | Wrong POS, UTF-8 cuts, partial words and unobserved inflections. | Reject invalid ranges/identity; compare POS/target-conditioned inference on complete observations. | Validated for exercised schemas/fixtures; annotation correctness remains caller-dependent. |
 | C3 | Unseen pair labels measure useful contextual discrimination despite shared lexical resources. | Explicit train/dev/test boundaries, with WordNet-derived source examples. | Interpretation of WiC results. | Full-context source overlap and missing corpus words. | Report overlap strata, OOV/error denominators, paired changes and lemma-cluster intervals. | Pair-label holdout does not establish resource-disjoint generalization; that remains unknown. |
 | C4 | New scoring can reuse v5 evidence without altering old scores or bytes. | Derived immutable caches omitted from serialization; explicit query methods. | Compatibility and reproducibility. | Cold/warm caches, loaded/mapped readers and save/reload. | Compare saved bytes and archived default predictions. | Fixture coverage passes; runtime identity is included in the validation record. |
+| C5 | Parser lemma/POS and single phrase heads delimit useful corpus-compatible candidates. | Original attributed parser annotations, not inferred labels at query time. | Observed inventories, adapted priors, features and information scores. | Homographic surface/lemma forms, mixed POS, unknown tags, unsupported occurrences and multihead phrases. | Independent occurrence-mass/IC oracles, reconstructed source inventories, matched-coverage evaluation and OOV accounting. | Mechanical contracts pass; semantic accuracy remains conditional on the parser, domain and candidate coverage. |
+| C6 | Supplied pair POS identifies the intended grammatical comparison. | Explicit author/caller annotation, separate from corpus-parser POS. | POS-conditioned lexical scores and evaluation. | Duplicate word pairs with different POS, missing compatible senses, conflicting explicit sense and adjective satellites. | Independent bilateral-prior oracle, preserved per-row annotations, invalid-tag rejection and matched-coverage comparisons. | Mechanical contracts pass; gains use additional task annotation and do not establish automatic POS inference. |
 
 | Impact | Adjacent opportunity or limit | Bound |
 | --- | --- | --- |
 | High | Structured evidence distinguishes some meanings provably collapsed by unordered pooling. | Verified on the supported probes; not general natural-language inference. |
 | High | External lexical knowledge materially changes the available signal. | Report the resource and matched coverage; gains are not proof of corpus-only learning. |
 | High | Best-sense scores can promote an irrelevant rare sense. | Expose senses and context; expected scoring is an explicit ablation, not an automatic cure. |
+| High | Annotation-compatible inventories prevent cross-POS and unrelated-lemma evidence leakage. | Same-POS ambiguity and parser errors remain; narrower lexical coverage must be reported. |
 | Medium | Complete evidence and graph improve auditability but increase load cost. | Compressed bounded metadata; sharded source storage and graph indexes remain future work. |
 | Medium | Domain-specific sense supervision could improve contextual weighting. | Contrastive training, calibration and domain holdouts remain research directions. |
 
@@ -432,6 +528,7 @@ separates those mechanics from corpus measurements and their limitations.
 
 - [Princeton WordNet](https://wordnet.princeton.edu/) and its [license](https://wordnet.princeton.edu/license-and-commercial-use): explicit English lexical evidence, retained in exports.
 - [NLTK WordNet interface](https://www.nltk.org/howto/wordnet.html): synsets, lemma counts and lexical relation access.
+- [Universal Dependencies POS definitions](https://universaldependencies.org/u/pos/): annotation categories; the table above specifies the local mapping to lexical POS. Phrase-head selection operates on stored zero-based parser heads, not CoNLL-U indices.
 - [Wu and Palmer, 1994](https://aclanthology.org/P94-1019/), DOI [10.3115/981732.981751](https://doi.org/10.3115/981732.981751): taxonomy-based similarity predecessor; the exact local variant is specified above.
 - [Lin, 1998, An Information-Theoretic Definition of Similarity](https://www.cs.swarthmore.edu/~richardw/classes/cs65/f08/litreview/phyo.pdf): information/commonality predecessor; local mass estimation and overrides are specified above.
 - [WiC author dataset and README](https://pilehvar.github.io/wic/): same-meaning task, target indices, explicit labels and source limitations.

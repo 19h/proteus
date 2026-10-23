@@ -254,6 +254,7 @@ Trace actual callers and feature gates for the requested behavior.
 | `src/semantic/corpus.rs`, `src/semantic/lexicon.rs` | Complete attributed annotations, resource schemas and bounded graph validation |
 | `src/semantic/context.rs`, `src/semantic/context_evaluation.rs` | Explicit POS/byte-target inference, bilateral comparisons and complete-observation contextual evaluation |
 | `src/semantic/information.rs`, `scripts/evaluate_contexts.py` | Derived information-content scores, nonserialized cache, WiC conversion and resource-overlap audit |
+| `src/semantic/pos_evaluation.rs` | Explicit pair-POS schema, bilateral conditioning and complete annotated predictions |
 | `src/semantic/relations.rs`, `src/semantic/evidence.rs` | Typed word scores, contextual senses, grammatical role binding and evidence states |
 | `src/cli/semantic.rs`, `scripts/prepare_semantic.py` | Native grounded commands and explicit external-resource preparation |
 | `src/storage/format.rs` | Serialized layout, validation, writers and mapped retina |
@@ -521,6 +522,12 @@ Information content is derived from immutable corpus/lexical evidence and is not
 serialized. Benchmark pair holdout does not imply lexical-resource disjointness;
 audit source-context overlap and report all strata. `tests/contextual_contract.rs`
 and `tests/test_evaluate_contexts.py` own these contracts.
+Observed lemma/POS inventories have a distinct training report identity within
+v5. Preserve the default lexical inventory and interpretation of absent fields.
+Use compatible-occurrence counts for adaptation and information mass, retain
+unsupported vocabulary entries, and validate the inventory against original
+annotations. `tests/observed_inventory.rs` owns these contracts, including phrase
+heads, lemma precedence, mixed POS and loaded/mapped persistence.
 See [the grounded contract](docs/semantic.md) before changing extraction, scoring
 or resource schemas. Grounded exact word ranking uses the graph; legacy text
 pooling and bitmap APIs remain distinct. Never describe a lexical-resource gain

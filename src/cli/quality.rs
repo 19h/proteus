@@ -10,12 +10,14 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(serde::Serialize)]
-struct EvaluationOutput {
+struct EvaluationOutput<Prediction = proteus::evaluation::PairPrediction> {
     model_sha256: String,
     reference_sha256: String,
     score_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pos_column: Option<usize>,
     #[serde(flatten)]
-    evaluation: proteus::evaluation::EvaluationReport,
+    evaluation: proteus::evaluation::EvaluationReport<Prediction>,
 }
 
 pub(crate) fn evaluate_retina(
@@ -24,7 +26,7 @@ pub(crate) fn evaluate_retina(
     score_column: usize,
     header: bool,
 ) -> Result<()> {
-    evaluate_retina_relation(model_path, reference_path, score_column, header, None)
+    evaluate_retina_relation(model_path, reference_path, score_column, header, None, None)
 }
 
 pub(crate) fn evaluate_retina_relation(
@@ -33,7 +35,22 @@ pub(crate) fn evaluate_retina_relation(
     score_column: usize,
     header: bool,
     relation: Option<proteus::semantic::Relation>,
+    pos_column: Option<usize>,
 ) -> Result<()> {
+    if let Some(pos_column) = pos_column {
+        return evaluate_retina_pos(
+            model_path,
+            reference_path,
+            score_column,
+            header,
+            relation.ok_or_else(|| {
+                proteus::ProteusError::Config(
+                    "POS evaluation requires an explicit semantic relation".into(),
+                )
+            })?,
+            pos_column,
+        );
+    }
     let model_sha256 = file_sha256(&model_path)?;
     let reference_sha256 = file_sha256(&reference_path)?;
     let retina = Retina::load(&model_path)?;
@@ -63,19 +80,65 @@ pub(crate) fn evaluate_retina_relation(
         "binary-cosine".into()
     };
 
-    if file_sha256(&model_path)? != model_sha256
-        || file_sha256(&reference_path)? != reference_sha256
+    publish_evaluation(
+        &model_path,
+        &reference_path,
+        EvaluationOutput {
+            model_sha256,
+            reference_sha256,
+            score_kind,
+            pos_column: None,
+            evaluation,
+        },
+    )
+}
+
+fn evaluate_retina_pos(
+    model_path: PathBuf,
+    reference_path: PathBuf,
+    score_column: usize,
+    header: bool,
+    relation: proteus::semantic::Relation,
+    pos_column: usize,
+) -> Result<()> {
+    let model_sha256 = file_sha256(&model_path)?;
+    let reference_sha256 = file_sha256(&reference_path)?;
+    let observations = proteus::semantic::read_pos_word_pairs(
+        BufReader::new(File::open(&reference_path)?),
+        score_column,
+        pos_column,
+        header,
+    )?;
+    let retina = Retina::load(&model_path)?;
+    let model = retina.semantic_model().ok_or_else(|| {
+        proteus::ProteusError::Config("POS evaluation requires a knowledge-grounded retina".into())
+    })?;
+    let evaluation = proteus::semantic::evaluate_pos_pairs(model, &observations, relation)?;
+    publish_evaluation(
+        &model_path,
+        &reference_path,
+        EvaluationOutput {
+            model_sha256,
+            reference_sha256,
+            score_kind: format!("knowledge-grounded:{relation:?}:pair-pos"),
+            pos_column: Some(pos_column),
+            evaluation,
+        },
+    )
+}
+
+fn publish_evaluation<Prediction: serde::Serialize>(
+    model_path: &std::path::Path,
+    reference_path: &std::path::Path,
+    output: EvaluationOutput<Prediction>,
+) -> Result<()> {
+    if file_sha256(model_path)? != output.model_sha256
+        || file_sha256(reference_path)? != output.reference_sha256
     {
         return Err(proteus::ProteusError::Config(
             "Evaluation inputs changed while being read".into(),
         ));
     }
-    let output = EvaluationOutput {
-        model_sha256,
-        reference_sha256,
-        score_kind,
-        evaluation,
-    };
     println!(
         "{}",
         serde_json::to_string_pretty(&output)

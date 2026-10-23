@@ -50,7 +50,8 @@ impl SemanticModel {
                     .ids
                     .get(&evidence.sense)
                     .ok_or_else(|| invalid("Unknown sense in information-content evidence"))?;
-                let weight = entry.count as f64 * evidence.prior;
+                let observations = entry.sense_occurrences.unwrap_or(entry.count);
+                let weight = observations as f64 * evidence.prior;
                 if !weight.is_finite() || weight < 0.0 {
                     return Err(invalid("Invalid information-content occurrence mass"));
                 }

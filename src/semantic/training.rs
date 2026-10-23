@@ -4,7 +4,7 @@ use super::corpus::read_annotated_corpus;
 use super::evidence::extract_events;
 use super::{
     Lexicon, OccurrenceReference, SemanticConfig, SemanticEntry, SemanticModel, SemanticReport,
-    SenseEvidence,
+    SenseEvidence, SenseInventory,
 };
 use crate::{Result, Retina, Tokenizer, WordFingerprint};
 use sha2::{Digest, Sha256};
@@ -24,6 +24,7 @@ struct Occurrence {
 #[derive(Default)]
 struct WordCounts {
     count: usize,
+    sense_occurrences: usize,
     lemmas: BTreeSet<String>,
     senses: BTreeSet<usize>,
 }
@@ -67,9 +68,20 @@ pub fn train_semantic(
             let row = counts.entry(occurrence.word.clone()).or_default();
             row.count += 1;
             row.lemmas.insert(occurrence.lemma.clone());
-            for key in [&occurrence.word, &occurrence.lemma] {
-                if let Some(senses) = index.lemmas.get(key) {
-                    row.senses.extend(senses);
+            match config.sense_inventory {
+                SenseInventory::Lexical => {
+                    for key in [&occurrence.word, &occurrence.lemma] {
+                        if let Some(senses) = index.lemmas.get(key) {
+                            row.senses.extend(senses);
+                        }
+                    }
+                }
+                SenseInventory::Observed => {
+                    let candidates = observed_senses(&occurrence, document, &index, &lexicon);
+                    if !candidates.is_empty() {
+                        row.sense_occurrences += 1;
+                        row.senses.extend(candidates);
+                    }
                 }
             }
         }
@@ -168,6 +180,18 @@ pub fn train_semantic(
                     .or_default() += weight;
                 *context_totals.entry(context_word.clone()).or_default() += weight;
             }
+            let conditioned;
+            let candidates = if config.sense_inventory == SenseInventory::Observed {
+                let allowed = observed_senses(&occurrence, document, &index, &lexicon);
+                conditioned = candidates
+                    .iter()
+                    .copied()
+                    .filter(|(sense, _)| allowed.contains(sense))
+                    .collect::<Vec<_>>();
+                conditioned.as_slice()
+            } else {
+                candidates.as_slice()
+            };
             if candidates.is_empty() {
                 continue;
             }
@@ -209,12 +233,16 @@ pub fn train_semantic(
     for (word, row) in counts {
         let candidates = &source_priors[&word];
         let mut senses = Vec::new();
+        let sense_count = match config.sense_inventory {
+            SenseInventory::Lexical => row.count,
+            SenseInventory::Observed => row.sense_occurrences,
+        };
         for &(sense, prior) in candidates {
             let statistics = &evidence[&word][&sense];
             senses.push(SenseEvidence {
                 sense: lexicon.senses[sense].id.clone(),
                 prior: (config.lexical_prior_strength * prior + statistics.mass)
-                    / (config.lexical_prior_strength + row.count as f64),
+                    / (config.lexical_prior_strength + sense_count as f64),
                 occurrence_mass: statistics.mass,
                 supporting_documents: statistics.documents.len(),
                 examples: statistics
@@ -252,6 +280,8 @@ pub fn train_semantic(
                 count: row.count,
                 lemmas: row.lemmas.into_iter().collect(),
                 senses,
+                sense_occurrences: (config.sense_inventory == SenseInventory::Observed)
+                    .then_some(row.sense_occurrences),
                 associations,
             },
         );
@@ -259,7 +289,7 @@ pub fn train_semantic(
     let lexicon_bytes =
         serde_json::to_vec(&lexicon).map_err(|error| super::invalid(&error.to_string()))?;
     let report = SemanticReport {
-        algorithm: "knowledge-grounded-senses-events-v1".into(),
+        algorithm: config.sense_inventory.algorithm().into(),
         config: config.clone(),
         corpus_sha256: format!("{:x}", corpus_digest.finalize()),
         lexicon_sha256: format!("{:x}", Sha256::digest(lexicon_bytes)),
@@ -379,4 +409,107 @@ fn occurrences(
         }
     }
     output
+}
+
+/// A phrase has an attributable POS only when its span has one dependency head.
+/// Self-headed roots count as external heads. Coordination and disconnected
+/// fragments with several heads remain unavailable rather than guessed.
+fn occurrence_head<'a>(
+    occurrence: &Occurrence,
+    document: &'a super::AnnotatedDocument,
+) -> Option<&'a super::AnnotatedToken> {
+    let mut heads = (occurrence.token..=occurrence.last_token).filter(|&position| {
+        let head = document.tokens[position].head;
+        head == position || !(occurrence.token..=occurrence.last_token).contains(&head)
+    });
+    let head = heads.next()?;
+    heads.next().is_none().then_some(&document.tokens[head])
+}
+
+fn observed_senses(
+    occurrence: &Occurrence,
+    document: &super::AnnotatedDocument,
+    index: &super::lexicon::LexiconIndex,
+    lexicon: &Lexicon,
+) -> Vec<usize> {
+    let Some(head) = occurrence_head(occurrence, document) else {
+        return Vec::new();
+    };
+    let pos = match head.pos.as_str() {
+        "NOUN" | "PROPN" => "n",
+        "VERB" | "AUX" => "v",
+        "ADJ" => "a",
+        "ADV" => "r",
+        _ => return Vec::new(),
+    };
+    // An available parser lemma takes precedence over an ambiguous surface
+    // spelling: saw/see must not acquire the unrelated saw/cutting sense.
+    index
+        .lemmas
+        .get(&occurrence.lemma)
+        .or_else(|| index.lemmas.get(&occurrence.word))
+        .into_iter()
+        .flatten()
+        .copied()
+        .filter(|&sense| super::information::canonical_pos(&lexicon.senses[sense].pos) == pos)
+        .collect()
+}
+
+/// Reconstruct the claimed inventory from retained source annotations. This
+/// validates attestation, not the linguistic accuracy of the parser's labels.
+pub(super) fn validate_observed_inventory(
+    model: &SemanticModel,
+    index: &super::lexicon::LexiconIndex,
+    tokenizer: &Tokenizer,
+) -> Result<()> {
+    let mut expected = BTreeMap::<String, WordCounts>::new();
+    for document in &model.documents {
+        for occurrence in occurrences(
+            document,
+            tokenizer,
+            index,
+            model.report.config.max_phrase_tokens,
+        ) {
+            let candidates = observed_senses(&occurrence, document, index, &model.lexicon);
+            let row = expected.entry(occurrence.word).or_default();
+            row.count += 1;
+            row.lemmas.insert(occurrence.lemma);
+            if !candidates.is_empty() {
+                row.sense_occurrences += 1;
+                row.senses.extend(candidates);
+            }
+        }
+    }
+    expected.retain(|_, row| row.count >= model.report.config.min_count);
+    if expected.len() != model.entries.len() {
+        return Err(super::invalid(
+            "Observed vocabulary differs from source annotations",
+        ));
+    }
+    for (word, row) in expected {
+        let entry = model
+            .entries
+            .get(&word)
+            .ok_or_else(|| super::invalid("Missing observed vocabulary entry"))?;
+        let expected_senses: BTreeSet<_> = row
+            .senses
+            .iter()
+            .map(|&sense| model.lexicon.senses[sense].id.as_str())
+            .collect();
+        let actual_senses: BTreeSet<_> = entry
+            .senses
+            .iter()
+            .map(|evidence| evidence.sense.as_str())
+            .collect();
+        if entry.count != row.count
+            || entry.sense_occurrences != Some(row.sense_occurrences)
+            || entry.lemmas != row.lemmas.into_iter().collect::<Vec<_>>()
+            || actual_senses != expected_senses
+        {
+            return Err(super::invalid(
+                "Observed sense inventory differs from source annotations",
+            ));
+        }
+    }
+    Ok(())
 }

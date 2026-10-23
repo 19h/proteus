@@ -15,6 +15,9 @@ lexical graph and source evidence; its gains use external WordNet knowledge.
 [Target-aware comparison](docs/semantic.md#target-aware-contextual-comparison)
 and [information-content scoring](docs/semantic.md#information-content-similarity)
 provide explicit alternatives to context-free best-sense ranking.
+[Observed lemma/POS inventories](docs/semantic.md#observed-lemma-and-pos-inventory)
+can restrict new training to candidates compatible with source annotations.
+Explicit pair POS also conditions lexical scores and labelled evaluation.
 The reference SOM and distributional encoders remain separately available.
 
 ## Start with a corpus

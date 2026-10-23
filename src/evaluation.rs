@@ -27,7 +27,7 @@ pub struct PairPrediction {
 
 /// Rank agreement is conditional on coverage; neither is a training objective.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvaluationReport {
+pub struct EvaluationReport<Prediction = PairPrediction> {
     /// All valid input pairs.
     pub total_pairs: usize,
     /// Pairs where both words exist in the retina.
@@ -39,7 +39,7 @@ pub struct EvaluationReport {
     /// Pearson correlation of average ranks. Null for fewer than two pairs or constant ranks.
     pub spearman: Option<f64>,
     /// Every pair, in input order, for common-coverage comparisons and resampling.
-    pub predictions: Vec<PairPrediction>,
+    pub predictions: Vec<Prediction>,
 }
 
 /// Read UTF-8 tab-separated pairs. Word columns are 1 and 2, `score_column` is 1-based.

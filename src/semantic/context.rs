@@ -29,7 +29,7 @@ pub enum PartOfSpeech {
 }
 
 impl PartOfSpeech {
-    fn lexical_code(self) -> &'static str {
+    pub(super) fn lexical_code(self) -> &'static str {
         match self {
             Self::Noun => "n",
             Self::Verb => "v",

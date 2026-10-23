@@ -49,12 +49,13 @@ neural model; optional Python preparation explicitly loads a dependency parser.
 | Corpus training | [`training.rs`](../src/training.rs), [`training/corpus.rs`](../src/training/corpus.rs) | Input records, configuration, provenance and shared corpus preparation |
 | Feature encoding | [`training/features.rs`](../src/training/features.rs), [`training/spectral.rs`](../src/training/spectral.rs) | Lexical/PPMI vectors and orthogonal subspace projection |
 | Fingerprint construction | [`training/folding.rs`](../src/training/folding.rs), [`training/angular.rs`](../src/training/angular.rs) | Optional spatial interpolation and non-spatial distributional encoding |
-| Grounded model | [`semantic/mod.rs`](../src/semantic/mod.rs), [`semantic/training.rs`](../src/semantic/training.rs) | Resolved config, validation, corpus adaptation and observed ancestor features |
+| Grounded model | [`semantic/mod.rs`](../src/semantic/mod.rs), [`semantic/training.rs`](../src/semantic/training.rs) | Resolved inventory, source reconstruction, occurrence-conditioned adaptation and ancestor features |
 | Grounded resources | [`semantic/corpus.rs`](../src/semantic/corpus.rs), [`semantic/lexicon.rs`](../src/semantic/lexicon.rs), [`prepare_semantic.py`](../scripts/prepare_semantic.py) | Complete attributed annotations, lexical graph and explicit preparation |
 | Contextual inference | [`semantic/context.rs`](../src/semantic/context.rs), [`semantic/context_evaluation.rs`](../src/semantic/context_evaluation.rs) | Explicit target/POS inference, bilateral scores, ambiguity diagnostics and complete-observation evaluation |
 | Information content | [`semantic/information.rs`](../src/semantic/information.rs) | Derived corpus/lexical ancestor mass, immutable nonserialized cache and explicit Lin-style score |
 | Grounded queries | [`semantic/relations.rs`](../src/semantic/relations.rs), [`semantic/evidence.rs`](../src/semantic/evidence.rs), [`cli/semantic.rs`](../src/cli/semantic.rs) | Typed scores, sense explanations, bound event matching and CLI |
 | Quality evaluation | [`evaluation.rs`](../src/evaluation.rs) | Labelled pair parsing, coverage, predictions and rank correlation |
+| POS-labelled evaluation | [`semantic/pos_evaluation.rs`](../src/semantic/pos_evaluation.rs) | Supplied grammatical annotations, bilateral sense conditioning and complete tagged predictions |
 | Configuration | [`config.rs`](../src/config.rs) | SOM, normalization, fingerprint and legacy storage options |
 | Text | [`text/`](../src/text/) | Tokenization, normalization and sentence-model wrapper |
 | Neural sentence model | [`wtpsplit/`](../src/wtpsplit/) | Vendored SaT model loading and inference |

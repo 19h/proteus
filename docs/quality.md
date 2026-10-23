@@ -8,6 +8,10 @@ the labelled pairs used to evaluate their rankings. See the
 [measured results and limits](validation.md#final-distributional-backend-and-broader-corpus-comparison).
 The [theory review](theory.md) examines structural information loss and a fresh
 verb benchmark; it separates proposed semantic improvements from these encoders.
+The grounded trainer also exposes an
+[observed lemma/POS inventory](semantic.md#observed-lemma-and-pos-inventory).
+Its source-compatibility contract is distinct from general lexical coverage;
+comparisons must retain unknown pairs and score both models on common coverage.
 
 ## Spatial evidence folding
 

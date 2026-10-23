@@ -131,6 +131,23 @@ models support the new explicit score without changing their default ranking.
 [Its exact equation](semantic.md#information-content-similarity) includes unit
 lexical smoothing, unique ancestor accumulation and relation overrides.
 
+`SemanticConfig.sense_inventory = SenseInventory::Observed` requires compatible
+parser lemma/POS evidence per occurrence during training. `Lexical` remains the
+default and the interpretation of absent old metadata. Observed entries expose
+`sense_occurrences`; the new report identifies its v2 training contract while
+retaining the v5 container. Loaded validation reconstructs its inventory from
+source annotations. [The observed-inventory contract](semantic.md#observed-lemma-and-pos-inventory)
+defines conditioning, phrase heads, accounting, fallback and coverage limits.
+
+`score_with_pos` and `similarity_with_pos` condition both word inventories and
+prior distributions on a supplied `PartOfSpeech`, without retraining. For annotated
+benchmarks, `read_pos_word_pairs` and `evaluate_pos_pairs` preserve grammatical
+annotations and duplicate observations. `EvaluationReport<Prediction>` defaults
+to the original `PairPrediction`; annotated evaluation returns
+`EvaluationReport<PosPairPrediction>` with unchanged scalar metric definitions.
+The [word-score contract](semantic.md#word-scores-and-sense-evidence) defines
+missing evidence, incompatible sense overrides and rejected association queries.
+
 `score`/`similarity` return `None` for unavailable relation evidence, distinct
 from zero. `search_evidence` accepts one validated `AnnotatedDocument`, a result
 count and nonnegative conflict penalty. `read_annotated_corpus` checks completion

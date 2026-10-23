@@ -10,6 +10,7 @@ cargo +nightly test --test training_contract
 cargo +nightly test --test rebase_compat
 cargo +nightly test --test semantic_contract
 cargo +nightly test --test contextual_contract
+cargo +nightly test --test observed_inventory
 python3 -m unittest discover -s tests -p test_prepare_semantic.py
 cargo +nightly test --test cli
 cargo +nightly test --test integration_tests
@@ -25,7 +26,8 @@ the recorded validation does not claim a warning-free tree.
 | --- | --- |
 | [`training_contract.rs`](../tests/training_contract.rs) | Scalar numerical oracle, schedules, topology, final assignment, reproducibility, corpus boundaries and malformed inputs |
 | [`rebase_compat.rs`](../tests/rebase_compat.rs) | Legacy file variants, metadata preservation and mapped search compatibility |
-| [`contextual_contract.rs`](../tests/contextual_contract.rs) | Independent information-content mass oracle, target/POS conditioning, bilateral symmetry, complete denominators, mapped persistence and CLI |
+| [`contextual_contract.rs`](../tests/contextual_contract.rs) | Independent information-content and bilateral-prior oracles, target/POS conditioning, annotated pair evaluation, symmetry, complete denominators, mapped persistence and CLI |
+| [`observed_inventory.rs`](../tests/observed_inventory.rs) | Independent lemma/POS occurrence-mass and IC oracles, phrase heads, absent legacy fields, forged inventories, deterministic loaded/mapped files and CLI |
 | [`test_evaluate_contexts.py`](../tests/test_evaluate_contexts.py) | UTF-8 target conversion, label shape, lemma-cluster resampling, input alias protection and failed report publication |
 | [`semantic_contract.rs`](../tests/semantic_contract.rs) | Independent taxonomy/sense fixtures, voice/role/polarity/scope, phrases, coverage, compressed v5 corruption, atomic CLI failure and loaded/mapped migration |
 | [`test_prepare_semantic.py`](../tests/test_prepare_semantic.py) | Standard-library tests for original UTF-8 offsets, deterministic resource hashing and atomic preparation |

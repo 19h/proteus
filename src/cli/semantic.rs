@@ -76,6 +76,9 @@ pub(crate) enum SemanticCommand {
         context: Option<String>,
         #[arg(long)]
         sense: Option<String>,
+        /// Restrict both words to this caller-supplied lexical POS
+        #[arg(long)]
+        pos: Option<PartOfSpeech>,
     },
     /// Search bound events with explicit support, contradiction and unknown
     Search {
@@ -99,6 +102,9 @@ pub(crate) enum SemanticCommand {
         score_column: usize,
         #[arg(long)]
         header: bool,
+        /// One-based author-supplied POS column shared by each pair's words
+        #[arg(long)]
+        pos_column: Option<usize>,
         #[arg(long, default_value = "similarity")]
         relation: Relation,
     },
@@ -172,6 +178,9 @@ pub(crate) struct TrainSemanticArgs {
     min_sense_support: f64,
     #[arg(long, default_value_t = 0.15)]
     sense_temperature: f64,
+    /// Lexical possibilities, or senses attested by corpus lemma and POS
+    #[arg(long, default_value = "lexical")]
+    sense_inventory: proteus::semantic::SenseInventory,
     #[arg(long, default_value_t = 0.02)]
     sparsity: f64,
     #[arg(long)]
@@ -244,17 +253,23 @@ pub(crate) fn run(command: SemanticCommand) -> Result<()> {
             relation,
             context,
             sense,
+            pos,
         } => {
             let retina = Retina::load(retina)?;
-            print_json(&model(&retina)?.score(
-                WordQuery {
-                    word: &left,
-                    context: context.as_deref(),
-                    sense: sense.as_deref(),
-                },
-                &right,
-                relation,
-            )?)
+            let query = WordQuery {
+                word: &left,
+                context: context.as_deref(),
+                sense: sense.as_deref(),
+            };
+            if let Some(pos) = pos {
+                print_json(&serde_json::json!({
+                    "part_of_speech": pos,
+                    "relation": relation,
+                    "match": model(&retina)?.score_with_pos(query, &right, relation, pos)?,
+                }))
+            } else {
+                print_json(&model(&retina)?.score(query, &right, relation)?)
+            }
         }
         SemanticCommand::Search {
             retina,
@@ -277,12 +292,14 @@ pub(crate) fn run(command: SemanticCommand) -> Result<()> {
             score_column,
             header,
             relation,
+            pos_column,
         } => super::quality::evaluate_retina_relation(
             retina,
             pairs,
             score_column,
             header,
             Some(relation),
+            pos_column,
         ),
         SemanticCommand::Events {
             retina,
@@ -354,6 +371,7 @@ fn train(arguments: TrainSemanticArgs) -> Result<()> {
         lexical_prior_strength: arguments.lexical_prior_strength,
         min_sense_support: arguments.min_sense_support,
         sense_temperature: arguments.sense_temperature,
+        sense_inventory: arguments.sense_inventory,
         fingerprint: FingerprintConfig {
             sparsity: arguments.sparsity,
             max_active_bits: arguments.max_active_bits.unwrap_or(usize::MAX),

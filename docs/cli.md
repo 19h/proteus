@@ -126,9 +126,9 @@ These are native `proteus semantic` subcommands:
 | `compare-contexts` | `-r RETINA --pairs JSONL` | Complete [context-pair schema](semantic.md#complete-contextual-evaluation), optional labels |
 | `senses` | `-r RETINA WORD` | `--context TEXT`, `--sense ID` |
 | `similar` | `-r RETINA WORD` | `--relation similarity`, `--context TEXT`, `--sense ID`, `-k 10` |
-| `score` | `-r RETINA LEFT RIGHT` | `--relation similarity`, `--context TEXT`, `--sense ID` |
+| `score` | `-r RETINA LEFT RIGHT` | `--relation similarity`, `--context TEXT`, `--sense ID`, explicit bilateral `--pos noun` |
 | `search` | `-r RETINA --query ANNOTATIONS` | `-k 10`, `--conflict-penalty 1` |
-| `evaluate` | `-r RETINA --pairs TSV` | `--score-column 3`, `--header`, `--relation similarity` |
+| `evaluate` | `-r RETINA --pairs TSV` | `--score-column 3`, `--header`, `--relation similarity`, explicit `--pos-column N` |
 | `events` | `-r RETINA` | `--document ID`, `-k 20` |
 
 Outputs are JSON, including nullable pair scores and explicit evidence states.
@@ -138,6 +138,13 @@ These commands reject legacy models lacking semantic metadata. Ordinary `similar
 and `evaluate` dispatch to the stored graph score for grounded models; `info`
 prints the semantic report. Generic bitmap lookup/composition remain bitmap
 operations. `semantic-lookup` rejects both angular and grounded non-spatial grids.
+
+`semantic train --sense-inventory observed` restricts each training occurrence
+to its parser lemma and compatible POS, including a unique dependency head for
+recognized phrases. The default `lexical` inventory preserves v1 behavior.
+The [observed-inventory contract](semantic.md#observed-lemma-and-pos-inventory)
+defines unsupported occurrences, counts, retraining and compatibility. This is a
+training option, not a query-time reinterpretation of an existing model.
 
 ## Query and inspection commands
 

@@ -9,6 +9,7 @@ mod corpus;
 mod evidence;
 mod information;
 mod lexicon;
+mod pos_evaluation;
 mod relations;
 mod training;
 
@@ -22,6 +23,7 @@ pub use context_evaluation::{
 pub use corpus::{read_annotated_corpus, AnnotatedDocument, AnnotatedToken, ParserProvenance};
 pub use evidence::{Argument, Event, EventRole, EvidenceMatch, EvidenceStatus};
 pub use lexicon::{LexicalSense, Lexicon, LexiconSource, SenseLemma};
+pub use pos_evaluation::{evaluate_pos_pairs, read_pos_word_pairs, PosPairPrediction, PosWordPair};
 pub use relations::{Relation, SemanticMatch, SenseExplanation, WordQuery};
 pub use training::train_semantic;
 
@@ -29,6 +31,44 @@ use crate::{FingerprintConfig, ProteusError, Result, TextConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
+
+/// Whether senses describe lexical possibilities or observed corpus usages.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SenseInventory {
+    /// Preserve the original surface/lemma union across all lexical POS.
+    #[default]
+    Lexical,
+    /// Require an observed lemma and compatible parser POS for each occurrence.
+    Observed,
+}
+
+impl SenseInventory {
+    fn is_lexical(&self) -> bool {
+        *self == Self::Lexical
+    }
+
+    fn algorithm(self) -> &'static str {
+        match self {
+            Self::Lexical => "knowledge-grounded-senses-events-v1",
+            Self::Observed => "knowledge-grounded-observed-senses-events-v2",
+        }
+    }
+}
+
+impl std::str::FromStr for SenseInventory {
+    type Err = ProteusError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "lexical" => Ok(Self::Lexical),
+            "observed" => Ok(Self::Observed),
+            _ => Err(ProteusError::Config(
+                "Sense inventory must be 'lexical' or 'observed'".into(),
+            )),
+        }
+    }
+}
 
 /// Explicit choices for the knowledge-grounded backend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +97,9 @@ pub struct SemanticConfig {
     pub min_sense_support: f64,
     /// Positive temperature for the gloss-overlap sense posterior.
     pub sense_temperature: f64,
+    /// Candidate inventory and occurrence conditioning; absent old metadata is lexical.
+    #[serde(default, skip_serializing_if = "SenseInventory::is_lexical")]
+    pub sense_inventory: SenseInventory,
 }
 
 impl Default for SemanticConfig {
@@ -79,6 +122,7 @@ impl Default for SemanticConfig {
             lexical_prior_strength: 5.0,
             min_sense_support: 0.5,
             sense_temperature: 0.15,
+            sense_inventory: SenseInventory::Lexical,
         }
     }
 }
@@ -148,6 +192,9 @@ pub struct SemanticEntry {
     pub lemmas: Vec<String>,
     /// Candidate senses and their corpus-adapted evidence.
     pub senses: Vec<SenseEvidence>,
+    /// Occurrences admitting observed lemma/POS evidence; absent in lexical v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sense_occurrences: Option<usize>,
     /// L2-normalized, truncated PPMI coordinates for the association channel.
     pub associations: BTreeMap<String, f64>,
 }
@@ -249,7 +296,7 @@ impl SemanticModel {
 
         self.report.config.validate()?;
         let index = self.index()?;
-        if self.report.algorithm != "knowledge-grounded-senses-events-v1"
+        if self.report.algorithm != self.report.config.sense_inventory.algorithm()
             || self.report.vocabulary != self.entries.len()
             || self.report.documents != self.documents.len()
             || self.report.events != self.events.len()
@@ -305,11 +352,15 @@ impl SemanticModel {
                 "Semantic source digest or parser provenance mismatch",
             ));
         }
+        if self.report.config.sense_inventory == SenseInventory::Observed {
+            training::validate_observed_inventory(self, index, &tokenizer)?;
+        }
         for (word, entry) in &self.entries {
             if self.normalize(word).as_deref() != Some(word) || entry.count == 0 {
                 return Err(invalid("Invalid semantic vocabulary entry"));
             }
             let mut mass = 0.0;
+            let mut occurrence_mass = 0.0;
             let mut seen = std::collections::BTreeSet::new();
             for sense in &entry.senses {
                 if !index.ids.contains_key(&sense.sense)
@@ -324,6 +375,7 @@ impl SemanticModel {
                     return Err(invalid("Invalid semantic sense evidence"));
                 }
                 mass += sense.prior;
+                occurrence_mass += sense.occurrence_mass;
                 for example in &sense.examples {
                     let document = documents
                         .get(example.document.as_str())
@@ -341,6 +393,15 @@ impl SemanticModel {
                         return Err(invalid("Occurrence text and lexical entry differ"));
                     }
                 }
+            }
+            match (self.report.config.sense_inventory, entry.sense_occurrences) {
+                (SenseInventory::Lexical, None) => {}
+                (SenseInventory::Observed, Some(count))
+                    if count <= entry.count
+                        && (count == 0) == entry.senses.is_empty()
+                        && (occurrence_mass - count as f64).abs()
+                            <= 1e-9 * (count as f64).max(1.0) => {}
+                _ => return Err(invalid("Invalid sense occurrence accounting")),
             }
             if !entry.senses.is_empty() && (mass - 1.0).abs() > 1e-8 {
                 return Err(invalid("Sense prior mass must sum to one"));
